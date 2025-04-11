@@ -1,0 +1,15 @@
+#!/bin/bash
+# git-capsulate - Shell wrapper for the Git isolation tool
+
+# Get the directory of this script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Check if the binary exists, if not build it
+if [ ! -f "$SCRIPT_DIR/bin/git-capsulate" ]; then
+  echo "Building git-capsulate..."
+  mkdir -p "$SCRIPT_DIR/bin"
+  cd "$SCRIPT_DIR" && go build -o bin/git-capsulate cmd/git-capsulate/main.go
+fi
+
+# Run the git-capsulate command
+"$SCRIPT_DIR/bin/git-capsulate" "$@" 
