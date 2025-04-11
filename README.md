@@ -108,51 +108,83 @@ External tools can access these environments by:
 
 ### Human-AI Collaboration Workflows
 
-CapsulateRepo enables powerful workflows between humans and AI agents:
+CapsulateRepo enables a powerful orchestration model where a single human can direct multiple AI agents:
 
 ```
-┌───────────────────────────────────────────────────────────────────┐
-│                       COLLABORATIVE WORKFLOW                       │
-└───────────────────────────────────────────────────────────────────┘
-                                │
-         ┌────────────────────┬─┴───────────────┬─────────────────┐
-         │                    │                 │                 │
-┌────────▼───────┐   ┌────────▼───────┐ ┌───────▼────────┐ ┌─────▼─────────┐
-│   AI Agent 1   │   │   AI Agent 2   │ │   AI Agent 3   │ │  Human Dev    │
-│  Environment   │   │  Environment   │ │  Environment   │ │  Environment  │
-└────────┬───────┘   └────────┬───────┘ └───────┬────────┘ └─────┬─────────┘
-         │                    │                 │                 │
-         │                    │                 │                 │
-┌────────▼────────────────────▼─────────────────▼─────────────────▼──────────┐
-│                                                                             │
-│                            BASE REPOSITORY                                  │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+                    ┌─────────────────────────────┐
+                    │     HUMAN ORCHESTRATOR      │
+                    │                             │
+                    │ ┌─────┐  ┌─────┐  ┌─────┐  │
+                    │ │View │  │Edit │  │Merge│  │
+                    │ └─────┘  └─────┘  └─────┘  │
+                    └───┬─────────┬─────────┬────┘
+                        │         │         │
+                        ▼         ▼         ▼
+          ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
+          │   AI AGENT 1    │ │   AI AGENT 2    │ │   AI AGENT 3    │
+          │                 │ │                 │ │                 │
+          │  ┌───────────┐  │ │  ┌───────────┐  │ │  ┌───────────┐  │
+          │  │Container 1│  │ │  │Container 2│  │ │  │Container 3│  │
+          │  └───────────┘  │ │  └───────────┘  │ │  └───────────┘  │
+          └────────┬────────┘ └────────┬────────┘ └────────┬────────┘
+                   │                   │                   │
+                   └─────────┬─────────┴─────────┬─────────┘
+                             │                   │
+                     ┌───────▼───────┐   ┌───────▼───────┐
+                     │  DIFF LAYER   │   │VERSION CONTROL│
+                     │(Minimal Size) │   │ (Checkpoints) │
+                     └───────┬───────┘   └───────────────┘
+                             │
+                     ┌───────▼───────┐
+                     │BASE REPOSITORY│
+                     │  (Read-only)  │
+                     └───────────────┘
 ```
 
-**Example workflows:**
+**Orchestration Benefits:**
 
-1. **Parallel Feature Development**
-   - Multiple AI agents work on different features in isolated environments
-   - Human reviews and refines each feature without context switching
+1. **Human as Conductor**: 
+   - Supervise multiple AI agents from a single dashboard
+   - Review, approve, or redirect each agent's work
+   - Gameified management of small, focused AI teams
 
-2. **Experimental Variations**
-   - AI generates multiple approaches to solving the same problem
-   - Each variation is in its own isolated environment
-   - Human can review and compare without messy branch switching
+2. **Minimal Resource Overhead**:
+   - Each agent only stores its changes (diffs)
+   - Run 5-10 agents with barely more storage than a single repo
+   - No need for multiple full repository copies
 
-3. **Code Review Pipeline**
-   - AI agent 1 generates code
-   - AI agent 2 reviews and suggests improvements
-   - AI agent 3 writes tests
-   - Human makes final decisions and merges
+3. **Checkpoint & Rollback**:
+   - Version control built into every environment
+   - Roll back AI experiments that went wrong
+   - Preserve successful approaches for future use
+   - Time-travel between different versions of AI output
 
-4. **Dependency Experiments**
-   - Test different dependency versions in parallel
-   - Evaluate breaking changes safely
-   - Compare performance between versions
+4. **Scale Without Complexity**:
+   - Start with 2-3 agents for tight control
+   - Scale to dozens when needed for larger projects
+   - Same interface regardless of team size
 
-This architecture makes CapsulateRepo ideal for orchestrating complex workflows between humans and AI agents, enabling truly parallel development.
+**Example Orchestration Workflows:**
+
+1. **Feature Development Pipeline**
+   - Agent 1: Drafts initial implementation
+   - Agent 2: Refines and optimizes the code
+   - Agent 3: Writes comprehensive tests
+   - Human: Orchestrates, reviews, and approves each stage
+
+2. **Competing Solutions Approach**
+   - Assign the same task to multiple agents with different approaches
+   - Review all solutions in parallel
+   - Choose the best implementation or merge ideas
+   - All with minimal switching cost or context loss
+
+3. **Incremental Team Expansion**
+   - Start with 1-2 trusted agents
+   - Add specialized agents as needed
+   - Each agent maintains its own branch
+   - Human maintains control without cognitive overload
+
+This orchestration model makes building with AI more like a strategy game - you direct the team, make the decisions, and maintain creative control while leveraging multiple specialized AI agents.
 
 ## 🛠️ Implementation Progress
 
