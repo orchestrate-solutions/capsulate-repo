@@ -167,9 +167,9 @@ CapsulateRepo enables a powerful orchestration model where a single human can di
 **Example Orchestration Workflows:**
 
 1. **Feature Development Pipeline**
-   - Agent 1: Drafts initial implementation
-   - Agent 2: Refines and optimizes the code
-   - Agent 3: Writes comprehensive tests
+   - Agent 1: Working issue 102 new feature
+   - Agent 2: Updating deps to see if breaking change (Impacts no one but Agent 2)
+   - Agent 3: Writing comprehensive tests for ITDD (Incrimental Test Driven Development)
    - Human: Orchestrates, reviews, and approves each stage
 
 2. **Competing Solutions Approach**
