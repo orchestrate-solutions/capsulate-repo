@@ -13,6 +13,8 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
+	"github.com/your-org/capsulate-repo/pkg/metrics"
+	"github.com/your-org/capsulate-repo/pkg/tracing"
 )
 
 // AgentConfig holds configuration for a git-isolate agent
@@ -99,6 +101,23 @@ func NewManager(sshDir, workspaceDir string) (*Manager, error) {
 // Create creates a new agent container
 func (m *Manager) Create(config AgentConfig) error {
 	ctx := context.Background()
+	
+	// Start metrics timer
+	metrics.StartTimer("create_container", metrics.ContainerOps, config.ID)
+	defer metrics.StopTimer("create_container", metrics.ContainerOps, config.ID)
+	
+	// Create a trace
+	ctx, spanID := tracing.StartSpan(ctx, "agent.Create", map[string]interface{}{
+		"agent_id": config.ID,
+		"use_overlay": config.UseOverlay,
+		"dependency_level": config.DependencyLevel,
+	})
+	defer func() {
+		if r := recover(); r != nil {
+			tracing.EndSpanError(spanID, fmt.Sprintf("Panic in Create: %v", r))
+			panic(r) // Re-throw the panic
+		}
+	}()
 
 	// Ensure base image exists
 	m.ensureBaseImage(ctx)
@@ -279,6 +298,8 @@ func (m *Manager) Create(config AgentConfig) error {
 		return m.setupGitRepository(config)
 	}
 
+	// Record successful operation
+	tracing.EndSpanSuccess(spanID)
 	return nil
 }
 

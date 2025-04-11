@@ -1,14 +1,19 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/your-org/capsulate-repo/pkg/agent"
+	"github.com/your-org/capsulate-repo/pkg/metrics"
+	"github.com/your-org/capsulate-repo/pkg/monitor"
+	"github.com/your-org/capsulate-repo/pkg/tracing"
 )
 
 func main() {
@@ -572,6 +577,191 @@ func main() {
 		},
 	}
 
+	// Add metrics command
+	metricsCmd := &cobra.Command{
+		Use:   "metrics [subcommand]",
+		Short: "Manage metrics and monitoring",
+		Long:  `Commands for metrics collection, monitoring, and observability.`,
+	}
+	
+	// Add metrics commands
+	metricsShowCmd := &cobra.Command{
+		Use:   "show",
+		Short: "Show collected metrics",
+		Long:  `Display a summary of collected metrics.`,
+		Run: func(cmd *cobra.Command, args []string) {
+			format, _ := cmd.Flags().GetString("format")
+			
+			if format == "json" {
+				jsonSummary, err := metrics.GetSummaryJSON()
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error generating metrics summary: %v\n", err)
+					os.Exit(1)
+				}
+				fmt.Println(jsonSummary)
+			} else {
+				summary := metrics.GetSummary()
+				fmt.Println("📊 Metrics Summary:")
+				fmt.Println("=====================================")
+				
+				for category, catSummary := range summary {
+					fmt.Printf("🔹 Category: %s\n", category)
+					fmt.Printf("  Total operations: %d\n", catSummary.TotalCount)
+					if catSummary.AvgDuration > 0 {
+						fmt.Printf("  Average duration: %.2f ms\n", catSummary.AvgDuration)
+						fmt.Printf("  Min/Max duration: %.2f ms / %.2f ms\n", catSummary.MinDuration, catSummary.MaxDuration)
+					}
+					fmt.Println("  Operations:")
+					for opName, opStats := range catSummary.Operations {
+						fmt.Printf("    - %s: %d operations", opName, opStats.Count)
+						if opStats.AvgDuration > 0 {
+							fmt.Printf(", avg: %.2f ms", opStats.AvgDuration)
+						}
+						fmt.Println()
+					}
+					fmt.Println()
+				}
+			}
+		},
+	}
+	metricsShowCmd.Flags().String("format", "text", "Output format (text or json)")
+	
+	metricsClearCmd := &cobra.Command{
+		Use:   "clear",
+		Short: "Clear collected metrics",
+		Long:  `Clear all collected metrics from memory.`,
+		Run: func(cmd *cobra.Command, args []string) {
+			metrics.Clear()
+			fmt.Println("✅ Metrics cleared")
+		},
+	}
+	
+	// Add monitoring commands
+	monitorCmd := &cobra.Command{
+		Use:   "monitor [subcommand]",
+		Short: "Monitor agent containers",
+		Long:  `Commands for monitoring agent containers.`,
+	}
+	
+	monitorShowCmd := &cobra.Command{
+		Use:   "show [agent-id]",
+		Short: "Show resource usage stats",
+		Long:  `Display resource usage statistics for agent containers.`,
+		Args:  cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			format, _ := cmd.Flags().GetString("format")
+			
+			var stats interface{}
+			if len(args) > 0 {
+				// Show stats for a specific agent
+				agentID := args[0]
+				stats = monitor.GetContainerStatsByAgentID(agentID)
+				if stats == nil || len(stats.([]*monitor.ContainerStats)) == 0 {
+					fmt.Printf("No stats available for agent '%s'\n", agentID)
+					os.Exit(0)
+				}
+			} else {
+				// Show stats for all agents
+				stats = monitor.GetAllContainerStats()
+				if stats == nil || len(stats.(map[string]*monitor.ContainerStats)) == 0 {
+					fmt.Println("No container stats available")
+					os.Exit(0)
+				}
+			}
+			
+			if format == "json" {
+				jsonData, err := json.MarshalIndent(stats, "", "  ")
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error marshaling stats to JSON: %v\n", err)
+					os.Exit(1)
+				}
+				fmt.Println(string(jsonData))
+			} else {
+				if len(args) > 0 {
+					// Display stats for a specific agent
+					agentStats := stats.([]*monitor.ContainerStats)
+					fmt.Printf("📊 Resource Usage for Agent '%s':\n", args[0])
+					fmt.Println("==========================================")
+					for _, stat := range agentStats {
+						displayContainerStats(stat)
+					}
+				} else {
+					// Display stats for all agents
+					allStats := stats.(map[string]*monitor.ContainerStats)
+					fmt.Println("📊 Resource Usage for All Agents:")
+					fmt.Println("==========================================")
+					for _, stat := range allStats {
+						fmt.Printf("🔹 Agent: %s\n", stat.AgentID)
+						displayContainerStats(stat)
+						fmt.Println()
+					}
+				}
+			}
+		},
+	}
+	monitorShowCmd.Flags().String("format", "text", "Output format (text or json)")
+	
+	monitorStartCmd := &cobra.Command{
+		Use:   "start",
+		Short: "Start container monitoring",
+		Long:  `Start collecting resource usage statistics for agent containers.`,
+		Run: func(cmd *cobra.Command, args []string) {
+			monitor.Start()
+			fmt.Println("✅ Monitoring started")
+		},
+	}
+	
+	monitorStopCmd := &cobra.Command{
+		Use:   "stop",
+		Short: "Stop container monitoring",
+		Long:  `Stop collecting resource usage statistics for agent containers.`,
+		Run: func(cmd *cobra.Command, args []string) {
+			monitor.Stop()
+			fmt.Println("✅ Monitoring stopped")
+		},
+	}
+	
+	// Add tracing commands
+	tracesCmd := &cobra.Command{
+		Use:   "traces",
+		Short: "Manage traces and spans",
+		Long:  `Commands for managing distributed traces and spans.`,
+		Run: func(cmd *cobra.Command, args []string) {
+			activeSpans := tracing.GetActiveSpans()
+			
+			if len(activeSpans) == 0 {
+				fmt.Println("No active traces")
+				return
+			}
+			
+			fmt.Printf("🔍 Active Traces: %d\n", len(activeSpans))
+			fmt.Println("==========================================")
+			
+			// Group spans by trace ID
+			traceMap := make(map[string][]*tracing.Span)
+			for _, span := range activeSpans {
+				traceID := span.Context.TraceID
+				traceMap[traceID] = append(traceMap[traceID], span)
+			}
+			
+			for traceID, spans := range traceMap {
+				fmt.Printf("Trace ID: %s\n", traceID)
+				for _, span := range spans {
+					fmt.Printf("  - Span: %s (ID: %s)\n", span.Name, span.Context.SpanID)
+					fmt.Printf("    Started: %s\n", span.StartTime.Format(time.RFC3339))
+					fmt.Printf("    Status: %d\n", span.Status.Code)
+					if len(span.Attributes) > 0 {
+						fmt.Println("    Attributes:")
+						for k, v := range span.Attributes {
+							fmt.Printf("      %s: %v\n", k, v)
+						}
+					}
+					fmt.Println()
+				}
+			}
+		},
+	}
+	
 	// Register commands
 	rootCmd.AddCommand(createCmd)
 	rootCmd.AddCommand(destroyCmd)
@@ -591,9 +781,38 @@ func main() {
 	rootCmd.AddCommand(createTeamCmd)
 	rootCmd.AddCommand(addTeamDepCmd)
 
+	// Add subcommands to their parent commands
+	metricsCmd.AddCommand(metricsShowCmd)
+	metricsCmd.AddCommand(metricsClearCmd)
+	
+	monitorCmd.AddCommand(monitorShowCmd)
+	monitorCmd.AddCommand(monitorStartCmd)
+	monitorCmd.AddCommand(monitorStopCmd)
+	
+	// Add commands to the root command
+	rootCmd.AddCommand(metricsCmd)
+	rootCmd.AddCommand(monitorCmd)
+	rootCmd.AddCommand(tracesCmd)
+
 	// Execute the root command
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
+}
+
+// Helper function to display container stats
+func displayContainerStats(stat *monitor.ContainerStats) {
+	fmt.Printf("  CPU: %.2f%%\n", stat.CPUUsage)
+	fmt.Printf("  Memory: %.2f%% (%.2f MB / %.2f MB)\n", 
+		stat.MemoryPercent, 
+		float64(stat.MemoryUsage)/(1024*1024), 
+		float64(stat.MemoryLimit)/(1024*1024))
+	fmt.Printf("  Disk: Read %.2f MB, Write %.2f MB\n", 
+		float64(stat.DiskRead)/(1024*1024), 
+		float64(stat.DiskWrite)/(1024*1024))
+	fmt.Printf("  Network: Rx %.2f MB, Tx %.2f MB\n", 
+		float64(stat.NetRx)/(1024*1024), 
+		float64(stat.NetTx)/(1024*1024))
+	fmt.Printf("  Last Update: %s\n", stat.Timestamp.Format(time.RFC3339))
 } 
