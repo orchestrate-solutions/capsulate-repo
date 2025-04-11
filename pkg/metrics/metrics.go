@@ -9,336 +9,195 @@ import (
 	"time"
 )
 
-// MetricType represents the type of metric being recorded
+// MetricType represents different metric categories
 type MetricType string
 
 const (
-	// DurationType represents a duration metric (e.g., operation time)
-	DurationType MetricType = "duration"
-	// CountType represents a count metric (e.g., number of operations)
-	CountType MetricType = "count"
-	// GaugeType represents a gauge metric (e.g., current resource usage)
-	GaugeType MetricType = "gauge"
-)
-
-// MetricCategory represents the category of the metric
-type MetricCategory string
-
-const (
-	// ContainerOps represents container-related operations
-	ContainerOps MetricCategory = "container"
-	// GitOps represents Git-related operations
-	GitOps MetricCategory = "git"
-	// FSWrites represents file system write operations
-	FSWrites MetricCategory = "fs_write"
-	// FSReads represents file system read operations
-	FSReads MetricCategory = "fs_read"
-	// DependencyOps represents dependency-related operations
-	DependencyOps MetricCategory = "dependency"
-	// SyncOps represents synchronization operations
-	SyncOps MetricCategory = "sync"
+	// GitOps represents Git operations metrics
+	GitOps MetricType = "git_ops"
+	// ContainerOps represents container operations metrics
+	ContainerOps MetricType = "container_ops"
+	// FileOps represents file system operations metrics
+	FileOps MetricType = "file_ops"
+	// DependencyOps represents dependency management operations metrics
+	DependencyOps MetricType = "dependency_ops"
 	// ResourceUsage represents resource usage metrics
-	ResourceUsage MetricCategory = "resource"
+	ResourceUsage MetricType = "resource_usage"
 )
 
-// Metric represents a single metric measurement
-type Metric struct {
-	Name      string         `json:"name"`
-	Type      MetricType     `json:"type"`
-	Category  MetricCategory `json:"category"`
-	Value     float64        `json:"value"`
-	Unit      string         `json:"unit"`
-	AgentID   string         `json:"agent_id,omitempty"`
-	Timestamp time.Time      `json:"timestamp"`
-}
+// Internal metrics storage
+var (
+	timers      = make(map[string]time.Time)
+	timersMutex sync.Mutex
+	
+	counters      = make(map[string]int)
+	countersMutex sync.Mutex
+	
+	gauges      = make(map[string]float64)
+	gaugesMutex sync.Mutex
+)
 
-// Collector manages metric collection and storage
-type Collector struct {
-	metrics      []Metric
-	startTimes   map[string]time.Time
-	mutex        sync.Mutex
-	enabled      bool
-	metricsPath  string
-	flushOnWrite bool
-}
-
-// NewCollector creates a new metric collector
-func NewCollector(metricsPath string, enabled bool, flushOnWrite bool) *Collector {
-	// Create metrics directory if it doesn't exist
-	if enabled && metricsPath != "" {
-		os.MkdirAll(metricsPath, 0755)
-	}
-
-	return &Collector{
-		metrics:      make([]Metric, 0),
-		startTimes:   make(map[string]time.Time),
-		enabled:      enabled,
-		metricsPath:  metricsPath,
-		flushOnWrite: flushOnWrite,
-	}
-}
-
-// StartTimer starts a timer for the given operation
-func (c *Collector) StartTimer(name string, category MetricCategory, agentID string) {
-	if !c.enabled {
-		return
-	}
-
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	// Generate a unique key for this timer
-	key := fmt.Sprintf("%s:%s:%s", name, category, agentID)
-	c.startTimes[key] = time.Now()
+// StartTimer starts a timer for the specified operation
+func StartTimer(operation string, metricType MetricType, agentID string) {
+	key := formatKey(string(metricType), operation, agentID)
+	
+	timersMutex.Lock()
+	defer timersMutex.Unlock()
+	
+	timers[key] = time.Now()
 }
 
 // StopTimer stops a timer and records the duration
-func (c *Collector) StopTimer(name string, category MetricCategory, agentID string) {
-	if !c.enabled {
-		return
-	}
-
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	// Generate the unique key
-	key := fmt.Sprintf("%s:%s:%s", name, category, agentID)
-	startTime, exists := c.startTimes[key]
+func StopTimer(operation string, metricType MetricType, agentID string) time.Duration {
+	key := formatKey(string(metricType), operation, agentID)
+	
+	timersMutex.Lock()
+	startTime, exists := timers[key]
+	delete(timers, key)
+	timersMutex.Unlock()
+	
 	if !exists {
-		return
+		return 0
 	}
-
-	// Calculate duration and record the metric
+	
 	duration := time.Since(startTime)
-	delete(c.startTimes, key)
-
-	metric := Metric{
-		Name:      name,
-		Type:      DurationType,
-		Category:  category,
-		Value:     float64(duration.Milliseconds()),
-		Unit:      "ms",
-		AgentID:   agentID,
-		Timestamp: time.Now(),
-	}
-
-	c.metrics = append(c.metrics, metric)
-
-	if c.flushOnWrite {
-		c.Flush()
-	}
+	return duration
 }
 
-// RecordCount records a count metric
-func (c *Collector) RecordCount(name string, category MetricCategory, value int, agentID string) {
-	if !c.enabled {
-		return
-	}
-
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	metric := Metric{
-		Name:      name,
-		Type:      CountType,
-		Category:  category,
-		Value:     float64(value),
-		Unit:      "count",
-		AgentID:   agentID,
-		Timestamp: time.Now(),
-	}
-
-	c.metrics = append(c.metrics, metric)
-
-	if c.flushOnWrite {
-		c.Flush()
-	}
+// RecordCount increments a counter for the specified operation
+func RecordCount(operation string, metricType MetricType, count int, agentID string) {
+	key := formatKey(string(metricType), operation, agentID)
+	
+	countersMutex.Lock()
+	defer countersMutex.Unlock()
+	
+	counters[key] += count
 }
 
-// RecordGauge records a gauge metric
-func (c *Collector) RecordGauge(name string, category MetricCategory, value float64, unit string, agentID string) {
-	if !c.enabled {
-		return
-	}
-
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	metric := Metric{
-		Name:      name,
-		Type:      GaugeType,
-		Category:  category,
-		Value:     value,
-		Unit:      unit,
-		AgentID:   agentID,
-		Timestamp: time.Now(),
-	}
-
-	c.metrics = append(c.metrics, metric)
-
-	if c.flushOnWrite {
-		c.Flush()
-	}
+// RecordGauge sets a gauge value for the specified operation
+func RecordGauge(operation string, metricType MetricType, value float64, unit string, agentID string) {
+	key := formatKey(string(metricType), operation, agentID)
+	
+	gaugesMutex.Lock()
+	defer gaugesMutex.Unlock()
+	
+	gauges[key] = value
 }
 
-// GetMetrics returns all recorded metrics
-func (c *Collector) GetMetrics() []Metric {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	// Return a copy to prevent race conditions
-	metricsCopy := make([]Metric, len(c.metrics))
-	copy(metricsCopy, c.metrics)
-	return metricsCopy
+// GetMetrics returns all collected metrics
+func GetMetrics() map[string]interface{} {
+	result := make(map[string]interface{})
+	
+	// Add counters
+	countersMutex.Lock()
+	countersCopy := make(map[string]int)
+	for k, v := range counters {
+		countersCopy[k] = v
+	}
+	countersMutex.Unlock()
+	result["counters"] = countersCopy
+	
+	// Add gauges
+	gaugesMutex.Lock()
+	gaugesCopy := make(map[string]float64)
+	for k, v := range gauges {
+		gaugesCopy[k] = v
+	}
+	gaugesMutex.Unlock()
+	result["gauges"] = gaugesCopy
+	
+	return result
 }
 
-// Clear clears all recorded metrics
-func (c *Collector) Clear() {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	c.metrics = make([]Metric, 0)
-	c.startTimes = make(map[string]time.Time)
+// Clear clears all collected metrics
+func Clear() {
+	timersMutex.Lock()
+	timers = make(map[string]time.Time)
+	timersMutex.Unlock()
+	
+	countersMutex.Lock()
+	counters = make(map[string]int)
+	countersMutex.Unlock()
+	
+	gaugesMutex.Lock()
+	gauges = make(map[string]float64)
+	gaugesMutex.Unlock()
 }
 
-// Flush writes all metrics to disk and clears them
-func (c *Collector) Flush() error {
-	if !c.enabled || c.metricsPath == "" {
-		return nil
+// formatKey creates a consistent key format for metrics
+func formatKey(metricType, operation, agentID string) string {
+	if agentID == "" {
+		return metricType + "." + operation
 	}
-
-	c.mutex.Lock()
-	metrics := c.metrics
-	c.metrics = make([]Metric, 0)
-	c.mutex.Unlock()
-
-	if len(metrics) == 0 {
-		return nil
-	}
-
-	// Generate a filename based on the current time
-	timestamp := time.Now().Format("20060102-150405.000")
-	filename := filepath.Join(c.metricsPath, fmt.Sprintf("metrics-%s.json", timestamp))
-
-	// Convert metrics to JSON
-	data, err := json.MarshalIndent(metrics, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal metrics: %v", err)
-	}
-
-	// Write to file
-	if err := os.WriteFile(filename, data, 0644); err != nil {
-		return fmt.Errorf("failed to write metrics to file: %v", err)
-	}
-
-	return nil
+	return metricType + "." + operation + "." + agentID
 }
 
-// Summary represents a summary of metric statistics
-type Summary struct {
-	Category    MetricCategory     `json:"category"`
-	Operations  map[string]OpStats `json:"operations"`
-	TotalCount  int                `json:"total_count"`
-	MinDuration float64            `json:"min_duration,omitempty"`
-	MaxDuration float64            `json:"max_duration,omitempty"`
-	AvgDuration float64            `json:"avg_duration,omitempty"`
-}
-
-// OpStats represents statistics for a specific operation
-type OpStats struct {
-	Count       int     `json:"count"`
-	MinDuration float64 `json:"min_duration,omitempty"`
-	MaxDuration float64 `json:"max_duration,omitempty"`
-	AvgDuration float64 `json:"avg_duration,omitempty"`
-	LastValue   float64 `json:"last_value,omitempty"`
-}
-
-// Summarize generates a summary of the metrics
-func (c *Collector) Summarize() map[MetricCategory]Summary {
-	c.mutex.Lock()
-	metrics := c.metrics
-	c.mutex.Unlock()
-
-	summaries := make(map[MetricCategory]Summary)
-
-	// Initialize summaries
-	for _, m := range metrics {
-		if _, exists := summaries[m.Category]; !exists {
-			summaries[m.Category] = Summary{
-				Category:   m.Category,
-				Operations: make(map[string]OpStats),
-				TotalCount: 0,
-			}
-		}
-	}
-
-	// Process metrics
-	for _, m := range metrics {
-		summary := summaries[m.Category]
-		summary.TotalCount++
-
-		stats, exists := summary.Operations[m.Name]
-		if !exists {
-			stats = OpStats{
-				Count:       0,
-				MinDuration: -1,
-				MaxDuration: 0,
-				AvgDuration: 0,
-			}
-		}
-
-		stats.Count++
-		stats.LastValue = m.Value
-
-		if m.Type == DurationType {
-			if stats.MinDuration < 0 || m.Value < stats.MinDuration {
-				stats.MinDuration = m.Value
-			}
-			if m.Value > stats.MaxDuration {
-				stats.MaxDuration = m.Value
-			}
-			// Update average
-			stats.AvgDuration = ((stats.AvgDuration * float64(stats.Count-1)) + m.Value) / float64(stats.Count)
-		}
-
-		summary.Operations[m.Name] = stats
-		summaries[m.Category] = summary
-	}
-
-	// Calculate overall min/max/avg for each category
-	for cat, summary := range summaries {
-		var totalDuration float64
-		var count int
-		minDuration := -1.0
-		maxDuration := 0.0
-
-		for _, stats := range summary.Operations {
-			if stats.MinDuration >= 0 {
-				if minDuration < 0 || stats.MinDuration < minDuration {
-					minDuration = stats.MinDuration
+// GetSummary returns a summary of metrics by category
+func GetSummary() map[string]interface{} {
+	metrics := GetMetrics()
+	summary := make(map[string]interface{})
+	
+	// Group by metric type
+	for metricsType, metricsData := range metrics {
+		switch metricsData.(type) {
+		case map[string]int:
+			byType := make(map[string]map[string]int)
+			for key, val := range metricsData.(map[string]int) {
+				// Extract type, operation, and agent from key
+				parts := splitKey(key)
+				if len(parts) >= 2 {
+					metricType := parts[0]
+					operation := parts[1]
+					
+					if _, exists := byType[metricType]; !exists {
+						byType[metricType] = make(map[string]int)
+					}
+					byType[metricType][operation] = val
 				}
-				if stats.MaxDuration > maxDuration {
-					maxDuration = stats.MaxDuration
-				}
-				totalDuration += stats.AvgDuration * float64(stats.Count)
-				count += stats.Count
 			}
-		}
-
-		if count > 0 {
-			summary.MinDuration = minDuration
-			summary.MaxDuration = maxDuration
-			summary.AvgDuration = totalDuration / float64(count)
-			summaries[cat] = summary
+			summary[metricsType] = byType
+			
+		case map[string]float64:
+			byType := make(map[string]map[string]float64)
+			for key, val := range metricsData.(map[string]float64) {
+				// Extract type, operation, and agent from key
+				parts := splitKey(key)
+				if len(parts) >= 2 {
+					metricType := parts[0]
+					operation := parts[1]
+					
+					if _, exists := byType[metricType]; !exists {
+						byType[metricType] = make(map[string]float64)
+					}
+					byType[metricType][operation] = val
+				}
+			}
+			summary[metricsType] = byType
 		}
 	}
-
-	return summaries
+	
+	return summary
 }
 
-// GetSummaryJSON returns a JSON string containing the metric summary
-func (c *Collector) GetSummaryJSON() (string, error) {
-	summary := c.Summarize()
+// splitKey splits a key by dots
+func splitKey(key string) []string {
+	var result []string
+	start := 0
+	for i := 0; i < len(key); i++ {
+		if key[i] == '.' {
+			result = append(result, key[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(key) {
+		result = append(result, key[start:])
+	}
+	return result
+}
+
+// GetSummaryJSON returns a JSON representation of the metrics summary
+func GetSummaryJSON() (string, error) {
+	summary := GetSummary()
 	data, err := json.MarshalIndent(summary, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal summary: %v", err)
@@ -346,78 +205,46 @@ func (c *Collector) GetSummaryJSON() (string, error) {
 	return string(data), nil
 }
 
-// GlobalCollector is the default global metric collector
-var GlobalCollector *Collector
-
-// Initialize the global collector
-func init() {
-	// Get metrics path from environment variable or use default
-	metricsPath := os.Getenv("CAPSULATE_METRICS_PATH")
+// Flush writes metrics to disk and clears them
+func Flush() error {
+	metricsPath := os.Getenv("GIT_CAPSULATE_METRICS_PATH")
 	if metricsPath == "" {
-		// Default to .capsulate/metrics in current directory
-		cwd, err := os.Getwd()
+		homeDir, err := os.UserHomeDir()
 		if err == nil {
-			metricsPath = filepath.Join(cwd, ".capsulate", "metrics")
+			metricsPath = filepath.Join(homeDir, ".git-capsulate", "metrics")
+		} else {
+			metricsPath = filepath.Join(os.TempDir(), "git-capsulate", "metrics")
 		}
 	}
-
-	// Check if metrics are disabled
-	enabled := true
-	if os.Getenv("CAPSULATE_METRICS_DISABLED") == "true" {
-		enabled = false
+	
+	// Create directory if it doesn't exist
+	if err := os.MkdirAll(metricsPath, 0755); err != nil {
+		return fmt.Errorf("failed to create metrics directory: %v", err)
 	}
-
-	// Check if metrics should be flushed immediately
-	flushOnWrite := false
-	if os.Getenv("CAPSULATE_METRICS_FLUSH_ON_WRITE") == "true" {
-		flushOnWrite = true
+	
+	// Generate filename with timestamp
+	timestamp := time.Now().Format("20060102-150405")
+	filename := filepath.Join(metricsPath, fmt.Sprintf("metrics-%s.json", timestamp))
+	
+	// Get metrics summary
+	summary := GetSummary()
+	
+	// Add timestamp
+	summary["timestamp"] = time.Now().Format(time.RFC3339)
+	
+	// Marshal to JSON
+	data, err := json.MarshalIndent(summary, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal metrics: %v", err)
 	}
-
-	// Initialize the global collector
-	GlobalCollector = NewCollector(metricsPath, enabled, flushOnWrite)
-}
-
-// StartTimer starts a timer for the given operation using the global collector
-func StartTimer(name string, category MetricCategory, agentID string) {
-	GlobalCollector.StartTimer(name, category, agentID)
-}
-
-// StopTimer stops a timer and records the duration using the global collector
-func StopTimer(name string, category MetricCategory, agentID string) {
-	GlobalCollector.StopTimer(name, category, agentID)
-}
-
-// RecordCount records a count metric using the global collector
-func RecordCount(name string, category MetricCategory, value int, agentID string) {
-	GlobalCollector.RecordCount(name, category, value, agentID)
-}
-
-// RecordGauge records a gauge metric using the global collector
-func RecordGauge(name string, category MetricCategory, value float64, unit string, agentID string) {
-	GlobalCollector.RecordGauge(name, category, value, unit, agentID)
-}
-
-// GetMetrics returns all recorded metrics from the global collector
-func GetMetrics() []Metric {
-	return GlobalCollector.GetMetrics()
-}
-
-// GetSummary returns a summary of metrics from the global collector
-func GetSummary() map[MetricCategory]Summary {
-	return GlobalCollector.Summarize()
-}
-
-// GetSummaryJSON returns a JSON string containing the metric summary from the global collector
-func GetSummaryJSON() (string, error) {
-	return GlobalCollector.GetSummaryJSON()
-}
-
-// Clear clears all recorded metrics from the global collector
-func Clear() {
-	GlobalCollector.Clear()
-}
-
-// Flush writes all metrics to disk and clears them from the global collector
-func Flush() error {
-	return GlobalCollector.Flush()
+	
+	// Write to file
+	if err := os.WriteFile(filename, data, 0644); err != nil {
+		return fmt.Errorf("failed to write metrics to file: %v", err)
+	}
+	
+	// Clear metrics
+	Clear()
+	
+	return nil
 } 

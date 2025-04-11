@@ -42,6 +42,13 @@ type SpanStatus struct {
 	Message string `json:"message,omitempty"`
 }
 
+// Event represents a tracing event
+type Event struct {
+	Name       string
+	Time       time.Time
+	Attributes map[string]string
+}
+
 // Tracer manages trace collection
 type Tracer struct {
 	spans       map[string]*Span
@@ -136,34 +143,10 @@ func (t *Tracer) EndSpan(spanID string, status SpanStatus) {
 	// Remove from active spans
 	t.activeSpans.Delete(spanID)
 
-	// Determine if this is a root span (no parent ID)
+	// Export trace if this is a root span (no parent ID)
 	if span.ParentID == "" {
-		// This is a root span, write the entire trace to disk
-		t.exportTrace(span.Context.TraceID)
+		go t.exportTrace(span.Context.TraceID)
 	}
-}
-
-// AddEvent adds an event to a span
-func (t *Tracer) AddEvent(spanID string, name string, attributes map[string]interface{}) {
-	if !t.enabled || spanID == "" {
-		return
-	}
-
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
-
-	span, exists := t.spans[spanID]
-	if !exists {
-		return
-	}
-
-	event := SpanEvent{
-		Name:       name,
-		Timestamp:  time.Now(),
-		Attributes: attributes,
-	}
-
-	span.Events = append(span.Events, event)
 }
 
 // AddAttribute adds or updates an attribute on a span
@@ -207,100 +190,100 @@ func (t *Tracer) SetStatus(spanID string, code int, message string) {
 	}
 }
 
-// GetActiveSpans returns all active spans
+// GetActiveSpans returns all currently active spans
 func (t *Tracer) GetActiveSpans() []*Span {
 	if !t.enabled {
 		return nil
 	}
 
-	var activeSpans []*Span
+	var spans []*Span
 	t.activeSpans.Range(func(key, value interface{}) bool {
-		activeSpans = append(activeSpans, value.(*Span))
+		if span, ok := value.(*Span); ok {
+			spans = append(spans, span)
+		}
 		return true
 	})
 
-	return activeSpans
+	return spans
 }
 
-// exportTrace writes a complete trace to disk
+// exportTrace exports a completed trace to the traces directory
 func (t *Tracer) exportTrace(traceID string) {
-	if !t.enabled || t.tracesPath == "" {
+	if !t.enabled || t.tracesPath == "" || traceID == "" {
 		return
 	}
 
-	// Collect all spans for this trace
+	t.mutex.Lock()
+	// Find all spans in this trace
 	var traceSpans []*Span
 	for _, span := range t.spans {
 		if span.Context.TraceID == traceID {
 			traceSpans = append(traceSpans, span)
 		}
 	}
+	t.mutex.Unlock()
 
 	if len(traceSpans) == 0 {
 		return
 	}
 
-	// Generate a filename based on the trace ID and timestamp
-	timestamp := time.Now().Format("20060102-150405")
-	filename := filepath.Join(t.tracesPath, fmt.Sprintf("trace-%s-%s.json", traceID[:8], timestamp))
-
-	// Convert spans to JSON
-	data, err := json.MarshalIndent(traceSpans, "", "  ")
+	// Create trace file
+	traceFile := filepath.Join(t.tracesPath, fmt.Sprintf("trace-%s.json", traceID))
+	f, err := os.Create(traceFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to marshal trace: %v\n", err)
 		return
 	}
+	defer f.Close()
 
-	// Write to file
-	if err := os.WriteFile(filename, data, 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to write trace to file: %v\n", err)
-		return
-	}
+	// Export all spans in the trace
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "  ")
+	enc.Encode(map[string]interface{}{
+		"trace_id": traceID,
+		"spans":    traceSpans,
+	})
 
-	// Clean up spans that were part of this trace
+	// Clean up trace spans from memory
+	t.mutex.Lock()
 	for _, span := range traceSpans {
 		delete(t.spans, span.Context.SpanID)
 	}
+	t.mutex.Unlock()
 }
 
 // generateID generates a unique ID for spans and traces
 func generateID() string {
-	// In a production scenario, you would use a proper algorithm to generate IDs
-	// For simplicity, we'll use a timestamp-based approach here
 	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid())
 }
 
-// GlobalTracer is the default global tracer
-var GlobalTracer *Tracer
-
 // Initialize the global tracer
 func init() {
-	// Get traces path from environment variable or use default
-	tracesPath := os.Getenv("CAPSULATE_TRACES_PATH")
+	// Get traces directory from environment or use default
+	tracesPath := os.Getenv("GIT_CAPSULATE_TRACES_PATH")
 	if tracesPath == "" {
-		// Default to .capsulate/traces in current directory
-		cwd, err := os.Getwd()
+		homeDir, err := os.UserHomeDir()
 		if err == nil {
-			tracesPath = filepath.Join(cwd, ".capsulate", "traces")
+			tracesPath = filepath.Join(homeDir, ".git-capsulate", "traces")
+		} else {
+			tracesPath = filepath.Join(os.TempDir(), "git-capsulate", "traces")
 		}
 	}
 
-	// Check if tracing is disabled
-	enabled := true
-	if os.Getenv("CAPSULATE_TRACES_DISABLED") == "true" {
-		enabled = false
+	// Check if tracing is enabled
+	tracingEnabled := true
+	if val := os.Getenv("GIT_CAPSULATE_TRACING_ENABLED"); val != "" {
+		tracingEnabled = val != "0" && val != "false"
 	}
 
-	// Initialize the global tracer
-	GlobalTracer = NewTracer(tracesPath, enabled)
+	GlobalTracer = NewTracer(tracesPath, tracingEnabled)
 }
 
-// StartSpan starts a new span using the global tracer
+// StartSpan starts a new trace span using the global tracer
 func StartSpan(ctx context.Context, name string, attributes map[string]interface{}) (context.Context, string) {
 	return GlobalTracer.StartSpan(ctx, name, attributes)
 }
 
-// EndSpan ends a span using the global tracer
+// EndSpan ends a trace span using the global tracer
 func EndSpan(spanID string, status SpanStatus) {
 	GlobalTracer.EndSpan(spanID, status)
 }
@@ -315,11 +298,6 @@ func EndSpanError(spanID string, message string) {
 	EndSpan(spanID, SpanStatus{Code: 2, Message: message}) // Error
 }
 
-// AddEvent adds an event to a span using the global tracer
-func AddEvent(spanID string, name string, attributes map[string]interface{}) {
-	GlobalTracer.AddEvent(spanID, name, attributes)
-}
-
 // AddAttribute adds or updates an attribute on a span using the global tracer
 func AddAttribute(spanID string, key string, value interface{}) {
 	GlobalTracer.AddAttribute(spanID, key, value)
@@ -330,19 +308,19 @@ func SetStatus(spanID string, code int, message string) {
 	GlobalTracer.SetStatus(spanID, code, message)
 }
 
-// GetActiveSpans returns all active spans from the global tracer
+// GetActiveSpans returns all currently active spans using the global tracer
 func GetActiveSpans() []*Span {
 	return GlobalTracer.GetActiveSpans()
 }
 
-// WithSpan is a helper function that wraps a function call with a span
+// WithSpan is a convenience function for wrapping a function with a span
 func WithSpan(ctx context.Context, name string, fn func(context.Context, string) error) error {
 	ctx, spanID := StartSpan(ctx, name, nil)
 	err := fn(ctx, spanID)
 	if err != nil {
 		EndSpanError(spanID, err.Error())
-		return err
+	} else {
+		EndSpanSuccess(spanID)
 	}
-	EndSpanSuccess(spanID)
-	return nil
+	return err
 } 
