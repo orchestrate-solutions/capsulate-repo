@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -100,6 +99,12 @@ func (m *Manager) Create(config AgentConfig) error {
 		}
 	}
 
+	// Create agent-specific workspace directory
+	agentWorkspace := filepath.Join(m.workspaceDir, ".capsulate", "workspaces", config.ID)
+	if err := os.MkdirAll(agentWorkspace, 0755); err != nil {
+		return fmt.Errorf("failed to create agent workspace directory: %v", err)
+	}
+
 	// Prepare volume mounts
 	mounts := []mount.Mount{
 		{
@@ -110,7 +115,7 @@ func (m *Manager) Create(config AgentConfig) error {
 		},
 		{
 			Type:   mount.TypeBind,
-			Source: m.workspaceDir,
+			Source: agentWorkspace,
 			Target: "/workspace",
 		},
 	}
@@ -372,8 +377,8 @@ func (m *Manager) Destroy(agentID string) error {
 	}
 
 	// Stop container if it's running
-	timeout := 10 * time.Second
-	if err := m.dockerClient.ContainerStop(ctx, containerID, &timeout); err != nil {
+	timeoutSeconds := int(10)
+	if err := m.dockerClient.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &timeoutSeconds}); err != nil {
 		return fmt.Errorf("failed to stop container: %v", err)
 	}
 
@@ -401,15 +406,47 @@ func (m *Manager) ensureBaseImage(ctx context.Context) error {
 		}
 	}
 
-	// If we're here, we need to build the image
-	fmt.Println("Building base image...")
-	
-	// TODO: Implement actual image building
-	// For now, use a simple Ubuntu image with Git installed
-	// In a real implementation, we would build a Dockerfile
+	// If we get here, need to build the image
+	fmt.Printf("Building base image...\n")
+
+	// Create a temporary directory for the Docker build context
+	tempDir, err := os.MkdirTemp("", "capsulate-docker-build")
+	if err != nil {
+		return fmt.Errorf("failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Create Dockerfile in temp directory
+	dockerfilePath := filepath.Join(tempDir, "Dockerfile")
+	dockerfileContent := `FROM ubuntu:22.04
+
+RUN apt-get update && apt-get install -y \
+    git \
+    openssh-client \
+    curl \
+    build-essential \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set up Git configuration
+RUN git config --global init.defaultBranch main
+
+# Create workspace directory
+RUN mkdir -p /workspace
+WORKDIR /workspace
+
+CMD ["tail", "-f", "/dev/null"]
+`
+	if err := os.WriteFile(dockerfilePath, []byte(dockerfileContent), 0644); err != nil {
+		return fmt.Errorf("failed to write Dockerfile: %v", err)
+	}
+
+	// For simplicity, let's use a pull-based approach instead of building
+	// This is a workaround since creating a proper tar archive for build context is complex
+	fmt.Printf("Using ubuntu image with Git...\n")
 	
 	// Pull ubuntu image
-	out, err := m.dockerClient.ImagePull(ctx, "ubuntu:latest", types.ImagePullOptions{})
+	out, err := m.dockerClient.ImagePull(ctx, "ubuntu:22.04", types.ImagePullOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to pull ubuntu image: %v", err)
 	}
@@ -421,8 +458,12 @@ func (m *Manager) ensureBaseImage(ctx context.Context) error {
 	resp, err := m.dockerClient.ContainerCreate(
 		ctx,
 		&container.Config{
-			Image: "ubuntu:latest",
-			Cmd:   []string{"/bin/bash", "-c", "apt-get update && apt-get install -y git"},
+			Image: "ubuntu:22.04",
+			Cmd:   []string{"/bin/bash", "-c", 
+				"apt-get update && apt-get install -y git openssh-client curl build-essential && " +
+				"apt-get clean && rm -rf /var/lib/apt/lists/* && " +
+				"git config --global init.defaultBranch main && " +
+				"mkdir -p /workspace"},
 		},
 		nil,
 		nil,
@@ -460,7 +501,7 @@ func (m *Manager) ensureBaseImage(ctx context.Context) error {
 	if err := m.dockerClient.ContainerRemove(ctx, resp.ID, types.ContainerRemoveOptions{}); err != nil {
 		return fmt.Errorf("failed to remove temp container: %v", err)
 	}
-	
-	fmt.Println("Base image built successfully")
+
+	fmt.Printf("Base image built successfully\n")
 	return nil
 } 
