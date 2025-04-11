@@ -6,6 +6,154 @@ A tool for creating isolated Git environments in Docker containers to enable par
 
 CapsulateRepo provides containerized Git environments with proper isolation. It allows developers to work on multiple isolated branches simultaneously without the risk of accidental changes leaking between branches. The isolation is achieved through Docker containers, each with its own Git state.
 
+## 🔄 How It Works
+
+### OverlayFS: Efficient File System Isolation
+
+CapsulateRepo uses OverlayFS to create efficient, isolated environments without duplicating files:
+
+```
+┌─────────────────────────────────────┐
+│           CONTAINER VIEW            │ <- What you see when working
+├─────────────────────────────────────┤
+│                                     │
+│  ┌─────────────────────────────┐    │
+│  │      Your Changes (Diff)    │    │ <- Only your modifications 
+│  ├─────────────────────────────┤    │    are stored here
+│  │                             │    │
+│  │  ┌─────────────────────┐    │    │
+│  │  │  Base Repository    │    │    │ <- Read-only, shared across
+│  │  │  (Read-only)        │    │    │    all containers
+│  │  └─────────────────────┘    │    │
+│  │                             │    │
+│  └─────────────────────────────┘    │
+│                                     │
+└─────────────────────────────────────┘
+```
+
+When you open a file, you see a merged view that combines:
+1. The original file from the base repository (bottom layer)
+2. Any changes you've made (upper layer)
+
+Changes you make are only stored in the diff layer, while the base repository remains untouched. This provides several benefits:
+
+### Three-Tier Dependency Management
+
+CapsulateRepo implements a sophisticated dependency management system that balances standardization with flexibility:
+
+```
+┌─────────────────────────────────────┐
+│       CONTAINER DEPENDENCIES        │ <- Container-specific deps
+├─────────────────────────────────────┤    (for experimentation)
+│                                     │
+│  ┌─────────────────────────────┐    │
+│  │      TEAM DEPENDENCIES      │    │ <- Team/feature-specific deps
+│  ├─────────────────────────────┤    │    (shared among a team)
+│  │                             │    │
+│  │  ┌─────────────────────┐    │    │
+│  │  │   CORE DEPENDENCIES │    │    │ <- Organization-wide deps
+│  │  │                     │    │    │    (shared by all containers)
+│  │  └─────────────────────┘    │    │
+│  │                             │    │
+│  └─────────────────────────────┘    │
+│                                     │
+└─────────────────────────────────────┘
+```
+
+**How it works:**
+
+1. **Core Dependencies**: Shared across all containers
+   - Ensures standardization across the organization
+   - Reduces duplication and saves storage
+   - Examples: foundational libraries, testing frameworks, core utilities
+
+2. **Team Dependencies**: Shared within specific teams or features
+   - Balances standardization with team-specific needs
+   - Enables team autonomy while maintaining consistency
+   - Examples: UI frameworks for frontend teams, data processing libraries for backend teams
+
+3. **Container Dependencies**: Specific to individual containers
+   - Allows full experimentation freedom
+   - Can override or add to team/core dependencies
+   - Perfect for testing new libraries, version upgrades, or experimental features
+
+This approach gives you the perfect balance between standardization, efficiency, and flexibility - critical for both human and AI-driven development workflows.
+
+### Why This Matters for Human-in-the-Loop Development
+
+1. **Parallel experimentation**: Multiple AI agents or humans can work on the same codebase simultaneously without interference
+   
+2. **Efficient storage**: Only store the changes, not entire copies of repositories
+
+3. **Safe isolation**: Changes in one environment never leak into another
+
+4. **Visibility**: External tools like VS Code can seamlessly work with these environments by connecting to the workspace directory
+
+5. **Context switching**: Instantly switch between different isolated environments without the overhead of git stashing or branch switching
+
+6. **Dependency isolation**: Each environment can have its own dependencies without conflicts
+
+This architecture is particularly powerful for human-in-the-loop development where:
+- AI agents can suggest changes in isolated environments
+- Humans can review and modify those changes
+- Multiple experiments can run concurrently
+- Teams can collaborate without stepping on each other's work
+
+### Accessing the Environment
+
+External tools can access these environments by:
+1. Opening the filesystem at `<workspace-dir>/.capsulate/workspaces/<agent-id>`
+2. Using the `git-capsulate exec` command to run operations inside the container
+3. Using VS Code's Remote Container extension to connect directly to the container
+
+### Human-AI Collaboration Workflows
+
+CapsulateRepo enables powerful workflows between humans and AI agents:
+
+```
+┌───────────────────────────────────────────────────────────────────┐
+│                       COLLABORATIVE WORKFLOW                       │
+└───────────────────────────────────────────────────────────────────┘
+                                │
+         ┌────────────────────┬─┴───────────────┬─────────────────┐
+         │                    │                 │                 │
+┌────────▼───────┐   ┌────────▼───────┐ ┌───────▼────────┐ ┌─────▼─────────┐
+│   AI Agent 1   │   │   AI Agent 2   │ │   AI Agent 3   │ │  Human Dev    │
+│  Environment   │   │  Environment   │ │  Environment   │ │  Environment  │
+└────────┬───────┘   └────────┬───────┘ └───────┬────────┘ └─────┬─────────┘
+         │                    │                 │                 │
+         │                    │                 │                 │
+┌────────▼────────────────────▼─────────────────▼─────────────────▼──────────┐
+│                                                                             │
+│                            BASE REPOSITORY                                  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Example workflows:**
+
+1. **Parallel Feature Development**
+   - Multiple AI agents work on different features in isolated environments
+   - Human reviews and refines each feature without context switching
+
+2. **Experimental Variations**
+   - AI generates multiple approaches to solving the same problem
+   - Each variation is in its own isolated environment
+   - Human can review and compare without messy branch switching
+
+3. **Code Review Pipeline**
+   - AI agent 1 generates code
+   - AI agent 2 reviews and suggests improvements
+   - AI agent 3 writes tests
+   - Human makes final decisions and merges
+
+4. **Dependency Experiments**
+   - Test different dependency versions in parallel
+   - Evaluate breaking changes safely
+   - Compare performance between versions
+
+This architecture makes CapsulateRepo ideal for orchestrating complex workflows between humans and AI agents, enabling truly parallel development.
+
 ## 🛠️ Implementation Progress
 
 ### Phase 1: Core Infrastructure ✅
@@ -170,4 +318,4 @@ git-capsulate destroy my-feature
 
 ## 📃 License
 
-MIT 
+MIT

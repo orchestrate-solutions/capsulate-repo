@@ -1,0 +1,20 @@
+[
+  {
+    "name": "agent.Create",
+    "context": {
+      "trace_id": "1744387177497924000-47895",
+      "span_id": "1744387177497922000-47895"
+    },
+    "start_time": "2025-04-11T10:59:37.497924-05:00",
+    "end_time": "2025-04-11T10:59:37.87875-05:00",
+    "duration_ms": 380,
+    "attributes": {
+      "agent_id": "obs-test-agent2",
+      "dependency_level": "container",
+      "use_overlay": false
+    },
+    "status": {
+      "code": 1
+    }
+  }
+]
