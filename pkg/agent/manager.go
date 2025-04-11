@@ -18,7 +18,8 @@ import (
 // AgentConfig holds configuration for a git-isolate agent
 type AgentConfig struct {
 	ID              string
-	DependencyLevel string
+	DependencyLevel string // "core", "team", or "container"
+	TeamID          string // Team identifier for team-level dependencies
 	OverrideDeps    []string
 	UseOverlay      bool
 	// Git repository configuration
@@ -38,41 +39,61 @@ type GitStatus struct {
 	BehindCount     int
 }
 
-// Manager handles agent lifecycle operations
+// Manager manages Docker containers for git-isolate agents
 type Manager struct {
 	dockerClient  *client.Client
 	baseImageName string
 	sshDir        string
 	workspaceDir  string
+	// Dependency and file system management
+	coreDepsPath     string
+	teamDepsPath     map[string]string
+	containerDepsPath string
+	// OverlayFS paths
+	baseRepoPath     string
+	diffsPath        string
+	workPath         string
 }
 
-// NewManager creates a new agent manager
-func NewManager() *Manager {
-	// Create Docker client
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+// NewManager creates a new Manager instance
+func NewManager(sshDir, workspaceDir string) (*Manager, error) {
+	// Initialize Docker client
+	dockerClient, err := client.NewClientWithOpts(client.FromEnv)
 	if err != nil {
-		panic(fmt.Errorf("failed to create Docker client: %v", err))
+		return nil, fmt.Errorf("failed to create Docker client: %v", err)
 	}
 
-	// Get SSH directory
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		panic(fmt.Errorf("failed to get user home directory: %v", err))
+	// Initialize manager
+	m := &Manager{
+		dockerClient:     dockerClient,
+		baseImageName:    "capsulate-base:latest",
+		sshDir:           sshDir,
+		workspaceDir:     workspaceDir,
+		// Default paths for dependency management
+		coreDepsPath:     filepath.Join(workspaceDir, ".capsulate", "dependencies", "core"),
+		teamDepsPath:     make(map[string]string),
+		containerDepsPath: filepath.Join(workspaceDir, ".capsulate", "dependencies", "container"),
+		// Default paths for OverlayFS
+		baseRepoPath:     filepath.Join(workspaceDir, ".capsulate", "overlay", "base"),
+		diffsPath:        filepath.Join(workspaceDir, ".capsulate", "overlay", "diffs"),
+		workPath:         filepath.Join(workspaceDir, ".capsulate", "overlay", "work"),
 	}
-	sshDir := filepath.Join(homeDir, ".ssh")
 
-	// Get current working directory as workspace
-	workspaceDir, err := os.Getwd()
-	if err != nil {
-		panic(fmt.Errorf("failed to get current working directory: %v", err))
+	// Ensure directories exist
+	dirs := []string{
+		m.coreDepsPath,
+		m.containerDepsPath,
+		m.baseRepoPath,
+		m.diffsPath,
+		m.workPath,
+	}
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return nil, fmt.Errorf("failed to create directory %s: %v", dir, err)
+		}
 	}
 
-	return &Manager{
-		dockerClient:  cli,
-		baseImageName: "capsulate-base:latest",
-		sshDir:        sshDir,
-		workspaceDir:  workspaceDir,
-	}
+	return m, nil
 }
 
 // Create creates a new agent container
@@ -108,16 +129,100 @@ func (m *Manager) Create(config AgentConfig) error {
 	// Prepare volume mounts
 	mounts := []mount.Mount{
 		{
-			Type:   mount.TypeBind,
-			Source: m.sshDir,
-			Target: "/root/.ssh",
+			Type:     mount.TypeBind,
+			Source:   m.sshDir,
+			Target:   "/root/.ssh",
 			ReadOnly: true, // Mount SSH directory as read-only
 		},
-		{
+	}
+	
+	// Add workspace mount - either direct or via overlay
+	if config.UseOverlay {
+		// For overlay, we'll set up the separate mounts for base, diff, and work dirs
+		// Create container-specific directories
+		containerDiffPath := filepath.Join(m.diffsPath, config.ID)
+		containerWorkPath := filepath.Join(m.workPath, config.ID)
+		
+		os.MkdirAll(containerDiffPath, 0755)
+		os.MkdirAll(containerWorkPath, 0755)
+		
+		// Mount the base repo as read-only
+		mounts = append(mounts, mount.Mount{
+			Type:     mount.TypeBind,
+			Source:   m.baseRepoPath,
+			Target:   "/workspace/base",
+			ReadOnly: true,
+		})
+		
+		// Mount container-specific diff directory
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeBind,
+			Source: containerDiffPath,
+			Target: "/workspace/diff",
+		})
+		
+		// Mount container-specific work directory
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeBind,
+			Source: containerWorkPath,
+			Target: "/workspace/work",
+		})
+		
+		// We'll need an entrypoint script to set up the overlay mount inside container
+	} else {
+		// Without overlay, mount workspace directory directly
+		mounts = append(mounts, mount.Mount{
 			Type:   mount.TypeBind,
 			Source: agentWorkspace,
 			Target: "/workspace",
-		},
+		})
+	}
+	
+	// Add dependency mounts based on isolation level
+	// Always mount core deps if available
+	if _, err := os.Stat(m.coreDepsPath); err == nil {
+		mounts = append(mounts, mount.Mount{
+			Type:     mount.TypeBind,
+			Source:   m.coreDepsPath,
+			Target:   "/workspace/core-deps",
+			ReadOnly: true,
+		})
+	}
+	
+	// Add team deps if applicable
+	if config.DependencyLevel == "team" && config.TeamID != "" {
+		teamPath, exists := m.teamDepsPath[config.TeamID]
+		if !exists {
+			// Create team dependency path if it doesn't exist
+			teamPath = filepath.Join(m.workspaceDir, ".capsulate", "dependencies", "team", config.TeamID)
+			os.MkdirAll(teamPath, 0755)
+			m.teamDepsPath[config.TeamID] = teamPath
+		}
+		
+		mounts = append(mounts, mount.Mount{
+			Type:     mount.TypeBind,
+			Source:   teamPath,
+			Target:   "/workspace/team-deps",
+			ReadOnly: true,
+		})
+	}
+	
+	// Add container-specific deps directory
+	containerDepsPath := filepath.Join(m.containerDepsPath, config.ID)
+	os.MkdirAll(containerDepsPath, 0755)
+	mounts = append(mounts, mount.Mount{
+		Type:   mount.TypeBind,
+		Source: containerDepsPath,
+		Target: "/workspace/container-deps",
+	})
+
+	// Prepare environment variables
+	env := []string{
+		fmt.Sprintf("AGENT_ID=%s", config.ID),
+		fmt.Sprintf("DEPENDENCY_LEVEL=%s", config.DependencyLevel),
+		fmt.Sprintf("TEAM_ID=%s", config.TeamID),
+		fmt.Sprintf("OVERRIDE_DEPS=%s", strings.Join(config.OverrideDeps, ",")),
+		fmt.Sprintf("USE_OVERLAY=%v", config.UseOverlay),
 	}
 
 	// Create container
@@ -127,12 +232,7 @@ func (m *Manager) Create(config AgentConfig) error {
 			Image: m.baseImageName,
 			Cmd:   []string{"tail", "-f", "/dev/null"}, // Keep container running
 			Tty:   true,
-			Env: []string{
-				fmt.Sprintf("AGENT_ID=%s", config.ID),
-				fmt.Sprintf("DEPENDENCY_LEVEL=%s", config.DependencyLevel),
-				fmt.Sprintf("OVERRIDE_DEPS=%s", strings.Join(config.OverrideDeps, ",")),
-				fmt.Sprintf("USE_OVERLAY=%v", config.UseOverlay),
-			},
+			Env:   env,
 		},
 		&container.HostConfig{
 			Mounts: mounts,
@@ -150,12 +250,75 @@ func (m *Manager) Create(config AgentConfig) error {
 		return fmt.Errorf("failed to start container: %v", err)
 	}
 
+	// Set up the overlay filesystem if requested
+	if config.UseOverlay {
+		setupCmd := `mkdir -p /workspace/merged && 
+			mount -t overlay overlay -o lowerdir=/workspace/base,upperdir=/workspace/diff,workdir=/workspace/work /workspace/merged &&
+			mkdir -p /workspace/merged/repo`
+		_, err := m.Exec(config.ID, setupCmd)
+		if err != nil {
+			return fmt.Errorf("failed to set up overlay filesystem: %v", err)
+		}
+	} else {
+		// Ensure repo directory exists
+		_, err := m.Exec(config.ID, "mkdir -p /workspace/repo")
+		if err != nil {
+			return fmt.Errorf("failed to create repo directory: %v", err)
+		}
+	}
+
+	// Set up dependency linking
+	depSetupCmd := m.generateDependencySetupScript(config)
+	_, err = m.Exec(config.ID, depSetupCmd)
+	if err != nil {
+		return fmt.Errorf("failed to set up dependencies: %v", err)
+	}
+
 	// Setup Git repository if URL is provided
 	if config.RepoURL != "" {
 		return m.setupGitRepository(config)
 	}
 
 	return nil
+}
+
+// generateDependencySetupScript creates a script to set up the dependencies inside the container
+func (m *Manager) generateDependencySetupScript(config AgentConfig) string {
+	script := `#!/bin/bash
+# Set up node_modules directory
+mkdir -p /workspace/node_modules
+
+# Link core dependencies if available
+if [ -d "/workspace/core-deps" ]; then
+    for pkg in $(find /workspace/core-deps -maxdepth 1 -type d ! -path "/workspace/core-deps"); do
+        pkg_name=$(basename $pkg)
+        # Don't link if it's in the override list
+        if [[ ! " %s " =~ " $pkg_name " ]]; then
+            ln -sf "$pkg" "/workspace/node_modules/$pkg_name"
+        fi
+    done
+fi
+
+# Link team dependencies if available
+if [ "%s" = "team" ] && [ -d "/workspace/team-deps" ]; then
+    for pkg in $(find /workspace/team-deps -maxdepth 1 -type d ! -path "/workspace/team-deps"); do
+        pkg_name=$(basename $pkg)
+        # Don't link if it's in the override list
+        if [[ ! " %s " =~ " $pkg_name " ]]; then
+            ln -sf "$pkg" "/workspace/node_modules/$pkg_name"
+        fi
+    done
+fi
+
+# Set up container-specific overrides
+if [ -n "%s" ] && [ -d "/workspace/container-deps" ]; then
+    # Install override dependencies (simplified example)
+    echo "Setting up container-specific dependencies: %s"
+    # In a real implementation, this would run npm/yarn install for those packages
+fi
+`
+	overrideDeps := strings.Join(config.OverrideDeps, " ")
+	return fmt.Sprintf(script, overrideDeps, config.DependencyLevel, overrideDeps, overrideDeps, overrideDeps)
 }
 
 // setupGitRepository initializes a Git repository in the agent container

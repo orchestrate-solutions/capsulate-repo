@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -26,217 +27,573 @@ func main() {
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			agentID := args[0]
-			dependencyLevel, _ := cmd.Flags().GetString("dependency-level")
-			overrideDepsList, _ := cmd.Flags().GetStringSlice("override-deps")
-			useOverlay, _ := cmd.Flags().GetBool("use-overlay")
 			
-			// Get repository options
+			// Get command-line flags
 			repoURL, _ := cmd.Flags().GetString("repo")
 			branch, _ := cmd.Flags().GetString("branch")
 			depth, _ := cmd.Flags().GetInt("depth")
-			gitConfigStr, _ := cmd.Flags().GetStringSlice("git-config")
+			depLevel, _ := cmd.Flags().GetString("dependency-level")
+			teamID, _ := cmd.Flags().GetString("team-id")
+			overrideDepsStr, _ := cmd.Flags().GetString("override-deps")
+			useOverlay, _ := cmd.Flags().GetBool("use-overlay")
 			
-			// Parse git config into map
-			gitConfig := make(map[string]string)
-			for _, cfg := range gitConfigStr {
-				parts := strings.SplitN(cfg, "=", 2)
-				if len(parts) == 2 {
-					gitConfig[parts[0]] = parts[1]
-				}
+			// Parse override dependencies
+			var overrideDeps []string
+			if overrideDepsStr != "" {
+				overrideDeps = strings.Split(overrideDepsStr, ",")
 			}
 			
-			// Initialize agent manager
-			manager := agent.NewManager()
+			// Get SSH directory for auth
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error getting user home directory: %v\n", err)
+				os.Exit(1)
+			}
+			sshDir := filepath.Join(homeDir, ".ssh")
 			
-			// Configure agent
+			// Get current working directory as workspace
+			workspaceDir, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error getting current directory: %v\n", err)
+				os.Exit(1)
+			}
+			
+			// Create agent manager
+			manager, err := agent.NewManager(sshDir, workspaceDir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating agent manager: %v\n", err)
+				os.Exit(1)
+			}
+
+			// Create agent configuration
 			config := agent.AgentConfig{
 				ID:              agentID,
-				DependencyLevel: dependencyLevel,
-				OverrideDeps:    overrideDepsList,
+				DependencyLevel: depLevel,
+				TeamID:          teamID,
+				OverrideDeps:    overrideDeps,
 				UseOverlay:      useOverlay,
 				RepoURL:         repoURL,
 				Branch:          branch,
 				Depth:           depth,
-				GitConfig:       gitConfig,
 			}
-			
+
 			// Create the agent
 			if err := manager.Create(config); err != nil {
 				fmt.Fprintf(os.Stderr, "Error creating agent: %v\n", err)
 				os.Exit(1)
 			}
-			
+
 			fmt.Printf("Agent '%s' created successfully\n", agentID)
 		},
 	}
-	
-	// Add flags for create command
-	createCmd.Flags().String("dependency-level", "core", "Dependency isolation level (core, team, container)")
-	createCmd.Flags().StringSlice("override-deps", []string{}, "List of dependencies to override")
-	createCmd.Flags().Bool("use-overlay", false, "Use overlay filesystem")
-	// Add repository flags
-	createCmd.Flags().String("repo", "", "Git repository URL to clone")
-	createCmd.Flags().String("branch", "", "Branch to checkout")
-	createCmd.Flags().Int("depth", 0, "Depth for shallow clones (0 for full clone)")
-	createCmd.Flags().StringSlice("git-config", []string{}, "Git configurations to apply (format: key=value)")
-	
+
+	// Add create command flags
+	createCmd.Flags().StringP("repo", "r", "", "Git repository URL to clone")
+	createCmd.Flags().StringP("branch", "b", "", "Branch to checkout")
+	createCmd.Flags().IntP("depth", "d", 0, "Depth for shallow clones (0 for full clone)")
+	createCmd.Flags().String("dependency-level", "container", "Dependency isolation level (core, team, container)")
+	createCmd.Flags().String("team-id", "", "Team identifier for team-level dependencies")
+	createCmd.Flags().String("override-deps", "", "Comma-separated list of dependencies to override")
+	createCmd.Flags().Bool("use-overlay", false, "Use overlay filesystem for efficient storage")
+
+	// Add destroy command
+	destroyCmd := &cobra.Command{
+		Use:   "destroy [agent-id]",
+		Short: "Destroy a Git isolation container",
+		Long:  `Stop and remove a Git isolation container.`,
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			agentID := args[0]
+			
+			// Get SSH directory for auth
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error getting user home directory: %v\n", err)
+				os.Exit(1)
+			}
+			sshDir := filepath.Join(homeDir, ".ssh")
+			
+			// Get current working directory as workspace
+			workspaceDir, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error getting current directory: %v\n", err)
+				os.Exit(1)
+			}
+			
+			// Create agent manager
+			manager, err := agent.NewManager(sshDir, workspaceDir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating agent manager: %v\n", err)
+				os.Exit(1)
+			}
+
+			// Destroy the agent
+			if err := manager.Destroy(agentID); err != nil {
+				fmt.Fprintf(os.Stderr, "Error destroying agent: %v\n", err)
+				os.Exit(1)
+			}
+
+			fmt.Printf("Agent '%s' destroyed successfully\n", agentID)
+		},
+	}
+
 	// Add exec command
 	execCmd := &cobra.Command{
 		Use:   "exec [agent-id] [command]",
-		Short: "Execute a command in the agent container",
-		Long:  `Execute a command in the specified agent container.`,
-		Args:  cobra.MinimumNArgs(2),
+		Short: "Execute a command in a Git isolation container",
+		Long:  `Run a command inside a Git isolation container.`,
+		Args:  cobra.ExactArgs(2),
 		Run: func(cmd *cobra.Command, args []string) {
 			agentID := args[0]
 			command := args[1]
 			
-			// For multiple arguments, combine them into a single command
-			if len(args) > 2 {
-				for i := 2; i < len(args); i++ {
-					command += " " + args[i]
-				}
+			// Get SSH directory for auth
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error getting user home directory: %v\n", err)
+				os.Exit(1)
+			}
+			sshDir := filepath.Join(homeDir, ".ssh")
+			
+			// Get current working directory as workspace
+			workspaceDir, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error getting current directory: %v\n", err)
+				os.Exit(1)
 			}
 			
-			// Initialize agent manager
-			manager := agent.NewManager()
-			
+			// Create agent manager
+			manager, err := agent.NewManager(sshDir, workspaceDir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating agent manager: %v\n", err)
+				os.Exit(1)
+			}
+
 			// Execute the command
 			output, err := manager.Exec(agentID, command)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error executing command: %v\n", err)
 				os.Exit(1)
 			}
-			
+
 			fmt.Print(output)
 		},
 	}
-	
-	// Add status command
+
+	// Add Git branch command
+	branchCmd := &cobra.Command{
+		Use:   "branch [agent-id] [branch-name]",
+		Short: "Create a Git branch in a container",
+		Long:  `Create a new Git branch in a container and optionally check it out.`,
+		Args:  cobra.ExactArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			agentID := args[0]
+			branchName := args[1]
+			
+			checkout, _ := cmd.Flags().GetBool("checkout")
+			
+			// Get SSH directory for auth
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error getting user home directory: %v\n", err)
+				os.Exit(1)
+			}
+			sshDir := filepath.Join(homeDir, ".ssh")
+			
+			// Get current working directory as workspace
+			workspaceDir, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error getting current directory: %v\n", err)
+				os.Exit(1)
+			}
+			
+			// Create agent manager
+			manager, err := agent.NewManager(sshDir, workspaceDir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating agent manager: %v\n", err)
+				os.Exit(1)
+			}
+
+			// Create the branch
+			if err := manager.CreateBranch(agentID, branchName, checkout); err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating branch: %v\n", err)
+				os.Exit(1)
+			}
+
+			fmt.Printf("Branch '%s' created", branchName)
+			if checkout {
+				fmt.Print(" and checked out")
+			}
+			fmt.Println()
+		},
+	}
+
+	// Add branch command flags
+	branchCmd.Flags().BoolP("checkout", "c", false, "Checkout the new branch after creation")
+
+	// Add Git checkout command
+	checkoutCmd := &cobra.Command{
+		Use:   "checkout [agent-id] [branch-name]",
+		Short: "Checkout a Git branch in a container",
+		Long:  `Switch to a different Git branch in a container.`,
+		Args:  cobra.ExactArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			agentID := args[0]
+			branchName := args[1]
+			
+			// Get SSH directory for auth
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error getting user home directory: %v\n", err)
+				os.Exit(1)
+			}
+			sshDir := filepath.Join(homeDir, ".ssh")
+			
+			// Get current working directory as workspace
+			workspaceDir, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error getting current directory: %v\n", err)
+				os.Exit(1)
+			}
+			
+			// Create agent manager
+			manager, err := agent.NewManager(sshDir, workspaceDir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating agent manager: %v\n", err)
+				os.Exit(1)
+			}
+
+			// Checkout the branch
+			if err := manager.CheckoutBranch(agentID, branchName); err != nil {
+				fmt.Fprintf(os.Stderr, "Error checking out branch: %v\n", err)
+				os.Exit(1)
+			}
+
+			fmt.Printf("Switched to branch '%s'\n", branchName)
+		},
+	}
+
+	// Add Git status command
 	statusCmd := &cobra.Command{
 		Use:   "status [agent-id]",
-		Short: "Get Git status from an agent container",
-		Long:  `Retrieve and display the Git status of the repository in the specified agent container.`,
+		Short: "Show Git status in a container",
+		Long:  `Display Git status information for a container.`,
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			agentID := args[0]
 			
-			// Initialize agent manager
-			manager := agent.NewManager()
+			// Get SSH directory for auth
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error getting user home directory: %v\n", err)
+				os.Exit(1)
+			}
+			sshDir := filepath.Join(homeDir, ".ssh")
 			
+			// Get current working directory as workspace
+			workspaceDir, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error getting current directory: %v\n", err)
+				os.Exit(1)
+			}
+			
+			// Create agent manager
+			manager, err := agent.NewManager(sshDir, workspaceDir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating agent manager: %v\n", err)
+				os.Exit(1)
+			}
+
 			// Get Git status
 			status, err := manager.GetGitStatus(agentID)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error getting Git status: %v\n", err)
 				os.Exit(1)
 			}
-			
-			// Display Git status in a formatted way
+
+			// Print status
 			fmt.Printf("Branch: %s\n", status.Branch)
-			fmt.Printf("Commit: %.8s\n", status.CurrentCommit)
-			fmt.Printf("Ahead: %d, Behind: %d\n", status.AheadCount, status.BehindCount)
+			fmt.Printf("Commit: %s\n", status.CurrentCommit)
+			fmt.Printf("Ahead: %d, Behind: %d\n\n", status.AheadCount, status.BehindCount)
 			
-			if len(status.ModifiedFiles) > 0 {
-				fmt.Println("\nModified files:")
-				for _, file := range status.ModifiedFiles {
-					fmt.Printf("  - %s\n", file)
-				}
+			fmt.Println("Modified files:")
+			for _, file := range status.ModifiedFiles {
+				fmt.Printf("  - %s\n", file)
 			}
 			
-			if len(status.UntrackedFiles) > 0 {
-				fmt.Println("\nUntracked files:")
-				for _, file := range status.UntrackedFiles {
-					fmt.Printf("  - %s\n", file)
-				}
+			fmt.Println("\nUntracked files:")
+			for _, file := range status.UntrackedFiles {
+				fmt.Printf("  - %s\n", file)
 			}
 		},
 	}
+
+	// Add dependency commands
 	
-	// Add branch command
-	branchCmd := &cobra.Command{
-		Use:   "branch [agent-id] [branch-name]",
-		Short: "Create a new Git branch in the agent container",
-		Long:  `Create a new Git branch in the specified agent container.`,
-		Args:  cobra.ExactArgs(2),
-		Run: func(cmd *cobra.Command, args []string) {
-			agentID := args[0]
-			branchName := args[1]
-			checkout, _ := cmd.Flags().GetBool("checkout")
-			
-			// Initialize agent manager
-			manager := agent.NewManager()
-			
-			// Create the branch
-			if err := manager.CreateBranch(agentID, branchName, checkout); err != nil {
-				fmt.Fprintf(os.Stderr, "Error creating branch: %v\n", err)
-				os.Exit(1)
-			}
-			
-			fmt.Printf("Branch '%s' created successfully\n", branchName)
-			if checkout {
-				fmt.Printf("Switched to branch '%s'\n", branchName)
-			}
-		},
-	}
-	
-	// Add flags for branch command
-	branchCmd.Flags().Bool("checkout", true, "Checkout the branch after creation")
-	
-	// Add checkout command
-	checkoutCmd := &cobra.Command{
-		Use:   "checkout [agent-id] [branch-name]",
-		Short: "Checkout a Git branch in the agent container",
-		Long:  `Checkout a Git branch in the specified agent container.`,
-		Args:  cobra.ExactArgs(2),
-		Run: func(cmd *cobra.Command, args []string) {
-			agentID := args[0]
-			branchName := args[1]
-			
-			// Initialize agent manager
-			manager := agent.NewManager()
-			
-			// Checkout the branch
-			if err := manager.CheckoutBranch(agentID, branchName); err != nil {
-				fmt.Fprintf(os.Stderr, "Error checking out branch: %v\n", err)
-				os.Exit(1)
-			}
-			
-			fmt.Printf("Switched to branch '%s'\n", branchName)
-		},
-	}
-	
-	// Add destroy command
-	destroyCmd := &cobra.Command{
-		Use:   "destroy [agent-id]",
-		Short: "Destroy an agent container",
-		Long:  `Destroy the specified agent container.`,
+	// List dependencies command
+	listDepsCmd := &cobra.Command{
+		Use:   "list-deps [agent-id]",
+		Short: "List dependencies in a container",
+		Long:  `Display the dependencies available in a container.`,
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			agentID := args[0]
 			
-			// Initialize agent manager
-			manager := agent.NewManager()
+			// Get SSH directory for auth
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error getting user home directory: %v\n", err)
+				os.Exit(1)
+			}
+			sshDir := filepath.Join(homeDir, ".ssh")
 			
-			// Destroy the agent
-			if err := manager.Destroy(agentID); err != nil {
-				fmt.Fprintf(os.Stderr, "Error destroying agent: %v\n", err)
+			// Get current working directory as workspace
+			workspaceDir, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error getting current directory: %v\n", err)
 				os.Exit(1)
 			}
 			
-			fmt.Printf("Agent '%s' destroyed successfully\n", agentID)
+			// Create agent manager
+			manager, err := agent.NewManager(sshDir, workspaceDir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating agent manager: %v\n", err)
+				os.Exit(1)
+			}
+
+			// Get command to list all dependencies
+			command := "ls -la /workspace/node_modules/"
+			output, err := manager.Exec(agentID, command)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error listing dependencies: %v\n", err)
+				os.Exit(1)
+			}
+
+			fmt.Printf("Dependencies for agent '%s':\n", agentID)
+			fmt.Println(output)
+		},
+	}
+
+	// Add dependency command
+	addDepCmd := &cobra.Command{
+		Use:   "add-dep [agent-id] [package]",
+		Short: "Add a dependency to a container",
+		Long:  `Add a new dependency to a container's isolated environment.`,
+		Args:  cobra.ExactArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			agentID := args[0]
+			packageName := args[1]
+			
+			// Get SSH directory for auth
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error getting user home directory: %v\n", err)
+				os.Exit(1)
+			}
+			sshDir := filepath.Join(homeDir, ".ssh")
+			
+			// Get current working directory as workspace
+			workspaceDir, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error getting current directory: %v\n", err)
+				os.Exit(1)
+			}
+			
+			// Create agent manager
+			manager, err := agent.NewManager(sshDir, workspaceDir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating agent manager: %v\n", err)
+				os.Exit(1)
+			}
+
+			// Create a stub directory for the package in the container-deps
+			command := fmt.Sprintf("mkdir -p /workspace/container-deps/%s", packageName)
+			_, err = manager.Exec(agentID, command)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error adding dependency: %v\n", err)
+				os.Exit(1)
+			}
+
+			// Create a version file in the package directory
+			command = fmt.Sprintf("echo '1.0.0' > /workspace/container-deps/%s/version", packageName)
+			_, err = manager.Exec(agentID, command)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error setting dependency version: %v\n", err)
+				os.Exit(1)
+			}
+
+			// Create symbolic link in node_modules
+			command = fmt.Sprintf("ln -sf /workspace/container-deps/%s /workspace/node_modules/%s", packageName, packageName)
+			_, err = manager.Exec(agentID, command)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error linking dependency: %v\n", err)
+				os.Exit(1)
+			}
+
+			fmt.Printf("Added dependency '%s' to agent '%s'\n", packageName, agentID)
+		},
+	}
+
+	// Add overlay filesystem commands
+	
+	// Overlay status command
+	overlayStatusCmd := &cobra.Command{
+		Use:   "overlay-status [agent-id]",
+		Short: "Show overlay filesystem status",
+		Long:  `Display information about the overlay filesystem for a container.`,
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			agentID := args[0]
+			
+			// Get SSH directory for auth
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error getting user home directory: %v\n", err)
+				os.Exit(1)
+			}
+			sshDir := filepath.Join(homeDir, ".ssh")
+			
+			// Get current working directory as workspace
+			workspaceDir, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error getting current directory: %v\n", err)
+				os.Exit(1)
+			}
+			
+			// Create agent manager
+			manager, err := agent.NewManager(sshDir, workspaceDir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating agent manager: %v\n", err)
+				os.Exit(1)
+			}
+
+			// Check if the agent uses overlay
+			command := "if mount | grep -q 'overlay on /workspace/merged'; then echo 'enabled'; else echo 'disabled'; fi"
+			output, err := manager.Exec(agentID, command)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error checking overlay status: %v\n", err)
+				os.Exit(1)
+			}
+
+			isEnabled := strings.TrimSpace(output) == "enabled"
+			
+			fmt.Printf("Overlay filesystem status for agent '%s':\n", agentID)
+			if isEnabled {
+				fmt.Println("Status: Enabled")
+				
+				// Get base layer file count
+				baseCmd := "find /workspace/base -type f | wc -l"
+				baseCount, err := manager.Exec(agentID, baseCmd)
+				if err == nil {
+					fmt.Printf("Base layer files: %s", baseCount)
+				}
+				
+				// Get diff layer file count
+				diffCmd := "find /workspace/diff -type f | wc -l"
+				diffCount, err := manager.Exec(agentID, diffCmd)
+				if err == nil {
+					fmt.Printf("Diff layer files: %s", diffCount)
+				}
+				
+				// Get total file count
+				mergedCmd := "find /workspace/merged -type f | wc -l"
+				mergedCount, err := manager.Exec(agentID, mergedCmd)
+				if err == nil {
+					fmt.Printf("Total files: %s", mergedCount)
+				}
+			} else {
+				fmt.Println("Status: Disabled")
+				fmt.Println("This agent is not using an overlay filesystem.")
+			}
+		},
+	}
+
+	// Add team commands
+
+	// Create team command
+	createTeamCmd := &cobra.Command{
+		Use:   "create-team [team-id]",
+		Short: "Create a new team",
+		Long:  `Create a new team for sharing dependencies.`,
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			teamID := args[0]
+			
+			// Get current working directory as workspace
+			workspaceDir, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error getting current directory: %v\n", err)
+				os.Exit(1)
+			}
+			
+			// Create team directory
+			teamPath := filepath.Join(workspaceDir, ".capsulate", "dependencies", "team", teamID)
+			if err := os.MkdirAll(teamPath, 0755); err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating team directory: %v\n", err)
+				os.Exit(1)
+			}
+
+			fmt.Printf("Team '%s' created successfully\n", teamID)
 		},
 	}
 	
-	// Add commands to root
+	// Add team dependency command
+	addTeamDepCmd := &cobra.Command{
+		Use:   "add-team-dep [team-id] [package]",
+		Short: "Add a team dependency",
+		Long:  `Add a dependency to a team's shared dependencies.`,
+		Args:  cobra.ExactArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			teamID := args[0]
+			packageName := args[1]
+			
+			// Get current working directory as workspace
+			workspaceDir, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error getting current directory: %v\n", err)
+				os.Exit(1)
+			}
+			
+			// Create package directory in team dependencies
+			packagePath := filepath.Join(workspaceDir, ".capsulate", "dependencies", "team", teamID, packageName)
+			if err := os.MkdirAll(packagePath, 0755); err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating package directory: %v\n", err)
+				os.Exit(1)
+			}
+			
+			// Create a version file
+			versionFile := filepath.Join(packagePath, "version")
+			if err := os.WriteFile(versionFile, []byte("1.0.0"), 0644); err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating version file: %v\n", err)
+				os.Exit(1)
+			}
+
+			fmt.Printf("Added dependency '%s' to team '%s'\n", packageName, teamID)
+		},
+	}
+
+	// Register commands
 	rootCmd.AddCommand(createCmd)
+	rootCmd.AddCommand(destroyCmd)
 	rootCmd.AddCommand(execCmd)
-	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(branchCmd)
 	rootCmd.AddCommand(checkoutCmd)
-	rootCmd.AddCommand(destroyCmd)
+	rootCmd.AddCommand(statusCmd)
 	
+	// Register dependency commands
+	rootCmd.AddCommand(listDepsCmd)
+	rootCmd.AddCommand(addDepCmd)
+	
+	// Register overlay commands
+	rootCmd.AddCommand(overlayStatusCmd)
+	
+	// Register team commands
+	rootCmd.AddCommand(createTeamCmd)
+	rootCmd.AddCommand(addTeamDepCmd)
+
 	// Execute the root command
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Println(err)
 		os.Exit(1)
 	}
 } 

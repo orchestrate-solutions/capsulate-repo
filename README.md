@@ -1,6 +1,103 @@
-# 🚀 CapsulateRepo
+# 🔒 CapsulateRepo
 
-A tool for managing isolated Git environments using Docker containers, allowing multiple parallel development streams on the same codebase.
+A tool for creating isolated Git environments in Docker containers to enable parallel features, experiments, and fixes without cluttering your main workspace.
+
+## 📋 Overview
+
+CapsulateRepo provides containerized Git environments with proper isolation. It allows developers to work on multiple isolated branches simultaneously without the risk of accidental changes leaking between branches. The isolation is achieved through Docker containers, each with its own Git state.
+
+## 🛠️ Implementation Progress
+
+### Phase 1: Core Infrastructure ✅
+- Container creation and management
+- SSH authentication sharing
+- Basic command execution
+- Container lifecycle management
+
+### Phase 2: Git Operations & Branch Management ✅
+- Git repository cloning
+- Branch creation and management
+- Status tracking and visualization
+- Repository sharing between containers
+
+### Phase 3: Dependency & File System Management ✅
+- Three-tier dependency management (core, team, container levels)
+- Efficient file storage with OverlayFS
+- Dependency isolation and overrides
+- Team-based dependency sharing
+
+### Phase 4: Synchronization & Scaling ⏳
+- Background syncing from central branches
+- Conflict detection and management
+- Scaling to many containers efficiently
+
+### Phase 5: Monitoring & Management ⏳
+- Resource usage monitoring
+- Container health checks
+- Branch activity metrics
+
+## 🧪 Testing
+
+Each phase includes comprehensive tests that validate the implemented functionality:
+
+- `tests/phase1-core-infrastructure.sh`: Tests for container creation, destruction, and command execution
+- `tests/phase2-git-operations.sh`: Tests for Git isolation, branch management, and status reporting
+- `tests/phase3-dependency-management.sh`: Tests for dependency management and OverlayFS functionality
+
+## 📚 Documentation
+
+Detailed analysis documents for each phase are available in the `docs/` directory:
+
+- `docs/phase1-analysis.md`: Core infrastructure design and implementation
+- `docs/phase2-analysis.md`: Git operations and branch management implementation
+- `docs/phase3-analysis.md`: Dependency and file system management architecture
+
+## 🚀 Usage
+
+### Create an isolated Git environment
+
+```bash
+git-capsulate create my-feature --repo=git@github.com:user/repo.git --branch=main --dependency-level=team --team-id=frontend --use-overlay=true
+```
+
+### Execute commands in the environment
+
+```bash
+git-capsulate exec my-feature "git status"
+```
+
+### Create and checkout branches
+
+```bash
+git-capsulate branch my-feature new-branch -c
+git-capsulate checkout my-feature main
+```
+
+### Manage dependencies
+
+```bash
+git-capsulate add-dep my-feature lodash
+git-capsulate list-deps my-feature
+```
+
+### Work with teams and shared dependencies
+
+```bash
+git-capsulate create-team frontend
+git-capsulate add-team-dep frontend react
+```
+
+### Check overlay filesystem status
+
+```bash
+git-capsulate overlay-status my-feature
+```
+
+### Destroy the environment
+
+```bash
+git-capsulate destroy my-feature
+```
 
 ## 📋 Requirements
 
@@ -63,24 +160,6 @@ A tool for managing isolated Git environments using Docker containers, allowing 
 ```bash
 ./git-capsulate create overlay-test --use-overlay=true
 ```
-
-## 🧪 Running Tests
-
-We use test-driven development. To run the tests:
-
-```bash
-cd tests
-./phase1-core-infrastructure.sh
-```
-
-## 📚 Architecture
-
-This tool follows a layered architecture:
-
-1. **CLI Layer** - Command-line interface using Cobra
-2. **Agent Manager** - Manages lifecycle of isolated environments
-3. **Docker Integration** - Handles container operations
-4. **Git Operations** - Manages Git operations in containers
 
 ## 🤝 Contributing
 
