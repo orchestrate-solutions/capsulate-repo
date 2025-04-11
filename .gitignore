@@ -1,3 +1,6 @@
 # CapsulateRepo specific
 .capsulate/
 repo/
+
+# Binary files
+bin/
