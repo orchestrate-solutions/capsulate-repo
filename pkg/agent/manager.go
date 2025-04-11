@@ -22,6 +22,21 @@ type AgentConfig struct {
 	DependencyLevel string
 	OverrideDeps    []string
 	UseOverlay      bool
+	// Git repository configuration
+	RepoURL         string // URL of Git repository to clone
+	Branch          string // Branch to checkout
+	Depth           int    // Depth for shallow clones
+	GitConfig       map[string]string // Git configuration to apply
+}
+
+// GitStatus represents the status of a Git repository in an agent
+type GitStatus struct {
+	Branch          string
+	CurrentCommit   string
+	ModifiedFiles   []string
+	UntrackedFiles  []string
+	AheadCount      int
+	BehindCount     int
 }
 
 // Manager handles agent lifecycle operations
@@ -130,9 +145,49 @@ func (m *Manager) Create(config AgentConfig) error {
 		return fmt.Errorf("failed to start container: %v", err)
 	}
 
-	// Setup initial environment if needed (future enhancement)
-	// This is where we'd initialize Git repos, etc.
+	// Setup Git repository if URL is provided
+	if config.RepoURL != "" {
+		return m.setupGitRepository(config)
+	}
 
+	return nil
+}
+
+// setupGitRepository initializes a Git repository in the agent container
+func (m *Manager) setupGitRepository(config AgentConfig) error {
+	// Prepare clone command with options
+	cloneCmd := fmt.Sprintf("git clone %s", config.RepoURL)
+	
+	// Add branch option if specified
+	if config.Branch != "" {
+		cloneCmd += fmt.Sprintf(" --branch %s", config.Branch)
+	}
+	
+	// Add depth option if specified
+	if config.Depth > 0 {
+		cloneCmd += fmt.Sprintf(" --depth %d", config.Depth)
+	}
+	
+	// Add target directory
+	cloneCmd += " /workspace/repo"
+	
+	// Execute clone command
+	_, err := m.Exec(config.ID, cloneCmd)
+	if err != nil {
+		return fmt.Errorf("failed to clone repository: %v", err)
+	}
+	
+	// Apply Git configuration if specified
+	if len(config.GitConfig) > 0 {
+		for key, value := range config.GitConfig {
+			configCmd := fmt.Sprintf("cd /workspace/repo && git config %s \"%s\"", key, value)
+			_, err := m.Exec(config.ID, configCmd)
+			if err != nil {
+				return fmt.Errorf("failed to apply Git config %s: %v", key, err)
+			}
+		}
+	}
+	
 	return nil
 }
 
@@ -199,6 +254,96 @@ func (m *Manager) Exec(agentID string, command string) (string, error) {
 	}
 
 	return stdout.String(), nil
+}
+
+// GetGitStatus retrieves the Git status of the repository in the agent container
+func (m *Manager) GetGitStatus(agentID string) (*GitStatus, error) {
+	// Get current branch
+	branchOutput, err := m.Exec(agentID, "cd /workspace/repo && git branch --show-current")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current branch: %v", err)
+	}
+	branch := strings.TrimSpace(branchOutput)
+	
+	// Get current commit
+	commitOutput, err := m.Exec(agentID, "cd /workspace/repo && git rev-parse HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current commit: %v", err)
+	}
+	commit := strings.TrimSpace(commitOutput)
+	
+	// Get modified files
+	modifiedOutput, err := m.Exec(agentID, "cd /workspace/repo && git diff --name-only")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get modified files: %v", err)
+	}
+	var modifiedFiles []string
+	if modifiedOutput != "" {
+		modifiedFiles = strings.Split(strings.TrimSpace(modifiedOutput), "\n")
+	}
+	
+	// Get untracked files
+	untrackedOutput, err := m.Exec(agentID, "cd /workspace/repo && git ls-files --others --exclude-standard")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get untracked files: %v", err)
+	}
+	var untrackedFiles []string
+	if untrackedOutput != "" {
+		untrackedFiles = strings.Split(strings.TrimSpace(untrackedOutput), "\n")
+	}
+	
+	// Get ahead/behind counts
+	aheadBehindOutput, err := m.Exec(agentID, "cd /workspace/repo && git rev-list --count --left-right @{upstream}...HEAD 2>/dev/null || echo '0 0'")
+	if err != nil {
+		// If error (possibly due to no upstream), default to 0 0
+		aheadBehindOutput = "0 0"
+	}
+	
+	aheadBehind := strings.Fields(strings.TrimSpace(aheadBehindOutput))
+	ahead, behind := 0, 0
+	if len(aheadBehind) >= 2 {
+		fmt.Sscanf(aheadBehind[1], "%d", &ahead)
+		fmt.Sscanf(aheadBehind[0], "%d", &behind)
+	}
+	
+	return &GitStatus{
+		Branch:         branch,
+		CurrentCommit:  commit,
+		ModifiedFiles:  modifiedFiles,
+		UntrackedFiles: untrackedFiles,
+		AheadCount:     ahead,
+		BehindCount:    behind,
+	}, nil
+}
+
+// CreateBranch creates a new Git branch in the agent container
+func (m *Manager) CreateBranch(agentID, branchName string, checkout bool) error {
+	createCmd := fmt.Sprintf("cd /workspace/repo && git branch %s", branchName)
+	_, err := m.Exec(agentID, createCmd)
+	if err != nil {
+		return fmt.Errorf("failed to create branch: %v", err)
+	}
+	
+	if checkout {
+		checkoutCmd := fmt.Sprintf("cd /workspace/repo && git checkout %s", branchName)
+		_, err := m.Exec(agentID, checkoutCmd)
+		if err != nil {
+			return fmt.Errorf("failed to checkout branch: %v", err)
+		}
+	}
+	
+	return nil
+}
+
+// CheckoutBranch checks out a Git branch in the agent container
+func (m *Manager) CheckoutBranch(agentID, branchName string) error {
+	checkoutCmd := fmt.Sprintf("cd /workspace/repo && git checkout %s", branchName)
+	_, err := m.Exec(agentID, checkoutCmd)
+	if err != nil {
+		return fmt.Errorf("failed to checkout branch: %v", err)
+	}
+	
+	return nil
 }
 
 // Destroy stops and removes an agent container
