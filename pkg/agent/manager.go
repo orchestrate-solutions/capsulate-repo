@@ -13,6 +13,8 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
+	"github.com/your-org/capsulate-repo/pkg/metrics"
+	"github.com/your-org/capsulate-repo/pkg/tracing"
 )
 
 // AgentConfig holds configuration for a git-isolate agent
@@ -99,6 +101,23 @@ func NewManager(sshDir, workspaceDir string) (*Manager, error) {
 // Create creates a new agent container
 func (m *Manager) Create(config AgentConfig) error {
 	ctx := context.Background()
+	
+	// Start metrics timer
+	metrics.StartTimer("create_container", metrics.ContainerOps, config.ID)
+	defer metrics.StopTimer("create_container", metrics.ContainerOps, config.ID)
+	
+	// Create a trace
+	ctx, spanID := tracing.StartSpan(ctx, "agent.Create", map[string]interface{}{
+		"agent_id": config.ID,
+		"use_overlay": config.UseOverlay,
+		"dependency_level": config.DependencyLevel,
+	})
+	defer func() {
+		if r := recover(); r != nil {
+			tracing.EndSpanError(spanID, fmt.Sprintf("Panic in Create: %v", r))
+			panic(r) // Re-throw the panic
+		}
+	}()
 
 	// Ensure base image exists
 	m.ensureBaseImage(ctx)
@@ -279,6 +298,8 @@ func (m *Manager) Create(config AgentConfig) error {
 		return m.setupGitRepository(config)
 	}
 
+	// Record successful operation
+	tracing.EndSpanSuccess(spanID)
 	return nil
 }
 
@@ -359,69 +380,75 @@ func (m *Manager) setupGitRepository(config AgentConfig) error {
 	return nil
 }
 
-// Exec executes a command in the agent container
+// Exec executes a command in an agent container
 func (m *Manager) Exec(agentID string, command string) (string, error) {
 	ctx := context.Background()
-	containerName := fmt.Sprintf("capsulate-%s", agentID)
-
-	// Find container by name
-	containers, err := m.dockerClient.ContainerList(ctx, types.ContainerListOptions{})
-	if err != nil {
-		return "", fmt.Errorf("failed to list containers: %v", err)
-	}
-
-	var containerID string
-	for _, c := range containers {
-		for _, name := range c.Names {
-			if name == "/"+containerName {
-				containerID = c.ID
-				break
-			}
+	
+	// Start metrics timer
+	metrics.StartTimer("exec_command", metrics.ContainerOps, agentID)
+	defer metrics.StopTimer("exec_command", metrics.ContainerOps, agentID)
+	
+	// Create a trace
+	ctx, spanID := tracing.StartSpan(ctx, "agent.Exec", map[string]interface{}{
+		"agent_id": agentID,
+		"command": command,
+	})
+	defer func() {
+		if r := recover(); r != nil {
+			tracing.EndSpanError(spanID, fmt.Sprintf("Panic in Exec: %v", r))
+			panic(r)
 		}
-	}
+	}()
 
-	if containerID == "" {
-		return "", fmt.Errorf("agent '%s' not found or not running", agentID)
-	}
+	// Container name based on agent ID
+	containerName := fmt.Sprintf("capsulate-%s", agentID)
 
 	// Create exec configuration
 	execConfig := types.ExecConfig{
-		Cmd:          []string{"/bin/sh", "-c", command},
+		Cmd:          []string{"/bin/bash", "-c", command},
 		AttachStdout: true,
 		AttachStderr: true,
 	}
 
 	// Create exec instance
-	execID, err := m.dockerClient.ContainerExecCreate(ctx, containerID, execConfig)
+	execIDResp, err := m.dockerClient.ContainerExecCreate(ctx, containerName, execConfig)
 	if err != nil {
+		tracing.EndSpanError(spanID, err.Error())
 		return "", fmt.Errorf("failed to create exec: %v", err)
 	}
 
-	// Start exec instance
-	resp, err := m.dockerClient.ContainerExecAttach(ctx, execID.ID, types.ExecStartCheck{})
+	// Attach to exec instance
+	execAttachResp, err := m.dockerClient.ContainerExecAttach(ctx, execIDResp.ID, types.ExecAttachOptions{})
 	if err != nil {
-		return "", fmt.Errorf("failed to start exec: %v", err)
+		tracing.EndSpanError(spanID, err.Error())
+		return "", fmt.Errorf("failed to attach to exec: %v", err)
 	}
-	defer resp.Close()
+	defer execAttachResp.Close()
 
 	// Read the output
-	var stdout bytes.Buffer
-	if _, err := io.Copy(&stdout, resp.Reader); err != nil {
+	var outBuf bytes.Buffer
+	_, err = io.Copy(&outBuf, execAttachResp.Reader)
+	if err != nil {
+		tracing.EndSpanError(spanID, err.Error())
 		return "", fmt.Errorf("failed to read exec output: %v", err)
 	}
 
-	// Get exec exit code
-	inspectResp, err := m.dockerClient.ContainerExecInspect(ctx, execID.ID)
+	// Get the exit code
+	inspect, err := m.dockerClient.ContainerExecInspect(ctx, execIDResp.ID)
 	if err != nil {
+		tracing.EndSpanError(spanID, err.Error())
 		return "", fmt.Errorf("failed to inspect exec: %v", err)
 	}
 
-	// Check exit code
-	if inspectResp.ExitCode != 0 {
-		return stdout.String(), fmt.Errorf("command exited with code %d", inspectResp.ExitCode)
+	// Check if the command exited with an error
+	if inspect.ExitCode != 0 {
+		err := fmt.Errorf("command exited with code %d", inspect.ExitCode)
+		tracing.EndSpanError(spanID, err.Error())
+		return outBuf.String(), err
 	}
 
-	return stdout.String(), nil
+	tracing.EndSpanSuccess(spanID)
+	return outBuf.String(), nil
 }
 
 // GetGitStatus retrieves the Git status of the repository in the agent container
@@ -514,42 +541,50 @@ func (m *Manager) CheckoutBranch(agentID, branchName string) error {
 	return nil
 }
 
-// Destroy stops and removes an agent container
+// Destroy destroys an agent container
 func (m *Manager) Destroy(agentID string) error {
 	ctx := context.Background()
+	
+	// Start metrics timer
+	metrics.StartTimer("destroy_container", metrics.ContainerOps, agentID)
+	defer metrics.StopTimer("destroy_container", metrics.ContainerOps, agentID)
+	
+	// Create a trace
+	ctx, spanID := tracing.StartSpan(ctx, "agent.Destroy", map[string]interface{}{
+		"agent_id": agentID,
+	})
+	defer func() {
+		if r := recover(); r != nil {
+			tracing.EndSpanError(spanID, fmt.Sprintf("Panic in Destroy: %v", r))
+			panic(r)
+		}
+	}()
+
+	// Container name based on agent ID
 	containerName := fmt.Sprintf("capsulate-%s", agentID)
 
-	// Find container by name
-	containers, err := m.dockerClient.ContainerList(ctx, types.ContainerListOptions{All: true})
+	// Stop the container
+	err := m.dockerClient.ContainerStop(ctx, containerName, container.StopOptions{})
 	if err != nil {
-		return fmt.Errorf("failed to list containers: %v", err)
+		tracing.AddEvent(spanID, "container_stop_failed", map[string]interface{}{
+			"error": err.Error(),
+		})
+		// Continue even if stop fails, as the container might not be running
 	}
 
-	var containerID string
-	for _, c := range containers {
-		for _, name := range c.Names {
-			if name == "/"+containerName {
-				containerID = c.ID
-				break
-			}
-		}
-	}
-
-	if containerID == "" {
-		return fmt.Errorf("agent '%s' not found", agentID)
-	}
-
-	// Stop container if it's running
-	timeoutSeconds := int(10)
-	if err := m.dockerClient.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &timeoutSeconds}); err != nil {
-		return fmt.Errorf("failed to stop container: %v", err)
-	}
-
-	// Remove container
-	if err := m.dockerClient.ContainerRemove(ctx, containerID, types.ContainerRemoveOptions{}); err != nil {
+	// Remove the container
+	err = m.dockerClient.ContainerRemove(ctx, containerName, types.ContainerRemoveOptions{
+		Force: true, // Force removal even if running
+	})
+	if err != nil {
+		tracing.EndSpanError(spanID, err.Error())
 		return fmt.Errorf("failed to remove container: %v", err)
 	}
 
+	// Record container destruction
+	metrics.RecordCount("container_destroyed", metrics.ContainerOps, 1, agentID)
+	
+	tracing.EndSpanSuccess(spanID)
 	return nil
 }
 
@@ -667,4 +702,41 @@ CMD ["tail", "-f", "/dev/null"]
 
 	fmt.Printf("Base image built successfully\n")
 	return nil
+}
+
+// GitExec executes a git command in an agent container
+func (m *Manager) GitExec(agentID string, args ...string) (string, error) {
+	// Start metrics timer
+	metrics.StartTimer("git_operation", metrics.GitOps, agentID)
+	defer metrics.StopTimer("git_operation", metrics.GitOps, agentID)
+	
+	// Record the specific git operation
+	if len(args) > 0 {
+		gitCmd := args[0]
+		metrics.RecordCount("git_"+gitCmd, metrics.GitOps, 1, agentID)
+	}
+	
+	gitCmd := fmt.Sprintf("git %s", strings.Join(args, " "))
+	
+	// Create a trace with the git command
+	ctx, spanID := tracing.StartSpan(context.Background(), "agent.GitExec", map[string]interface{}{
+		"agent_id": agentID,
+		"git_command": gitCmd,
+	})
+	defer func() {
+		if r := recover(); r != nil {
+			tracing.EndSpanError(spanID, fmt.Sprintf("Panic in GitExec: %v", r))
+			panic(r)
+		}
+	}()
+	
+	// Execute the git command
+	output, err := m.Exec(agentID, gitCmd)
+	if err != nil {
+		tracing.EndSpanError(spanID, err.Error())
+		return output, err
+	}
+	
+	tracing.EndSpanSuccess(spanID)
+	return output, nil
 } 
