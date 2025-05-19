@@ -59,15 +59,3 @@ git worktree add ../repo-feature feature-branch
 | **Git Worktree**          | Good (separate dirs)    | Low          | Low             | Concurrent branch work locally      |
 | **Separate Clones**       | Full (separate repos)   | High         | Very low        | Full isolation, different setups    |
 | **Docker (CapsulateRepo)**| Full OS/container isolation | Medium-high | High            | Advanced parallel dev and experiments|
-
----
-
-## Next Steps
-
-- For straightforward local branching with isolation, try `git worktree`.  
-- For full OS-level isolation or experimental dependency management, consider Docker-based CapsulateRepo environments.  
-- Decide based on disk space, number of branches, and complexity tolerance.
-
----
-
-If you want, I can help you with concrete commands or scripts for any of these options.
