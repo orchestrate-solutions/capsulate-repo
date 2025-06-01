@@ -350,4 +350,4 @@ git-capsulate destroy my-feature
 
 ## 📃 License
 
-MIT
+Apache 2.0
